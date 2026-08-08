@@ -62,56 +62,40 @@ Two specific gaps:
   (`z.entities.size < cap - headroom`). Nothing checks that the entity falls in
   the zone's range.
 
-### The two authority theorems are vacuous, and are not cited here
+### The two authority theorems were vacuous, and are now proved
 
 `ReBAC.lean`'s `rebac_requires_authority_for_mutation` and
-`non_authority_cannot_bind_mutation` are stated as `True := trivial` with every
-hypothesis unused. Their docstrings describe the intended property; the formal
-content is provable regardless of any input. That file is imported by
-`Research.lean`, which declares itself "NOT on the CI production gate…
-aspirational".
+`non_authority_cannot_bind_mutation` were stated as `True := trivial` with every
+hypothesis unused, so they held regardless of any input and established nothing.
+Their docstrings described the intended property.
 
-**Standard applied: prove them or do not use the proof.** This RFD does not use
-them. Nothing here rests on authority binding being formally established.
+**Fixed upstream**, merged to `lean-rebac-core` main as `8b13e75`.
 
-#### Why they cannot be proved as written
-
-The statement needs a concept the model lacks. `rebacCheck : PlayerClaim →
-Action → Bool` is a pure function with no notion of who is asking, so "not
-binding" is not expressible about it. The fix is to name the missing concept
-rather than to strengthen the proof.
-
-The following restatement compiles under Lean 4, with stand-ins for the
-surrounding definitions so it needs no Mathlib:
+They could not be proved as written, and the reason is worth keeping: the
+statement needed a concept the model lacked. `rebacCheck` is a pure function
+with no notion of who is asking, so "not binding" is not a property of it. It is
+a property of the node evaluating it, and that had no name. Naming it is the
+whole fix:
 
 ```lean
-/-- The decision this node is entitled to make.
-    `none` means "not binding here; forward to the authority zone". -/
-def bindingDecision (auth : Bool) (action : Action) : Option Bool :=
+/-- `none` means the answer is not binding here and the request must be
+    forwarded to the authority zone. -/
+def bindingDecision {n : Nat} (view : NodeView n) (rep : RelReplica n)
+    (claim : PlayerClaim n) (action : Action) : Option Bool :=
   match action with
-  | .observe => some (rebacCheck action)
-  | _        => if auth then some (rebacCheck action) else none
-
-theorem authority_binds_any_action (action : Action) (h : isAuthority = true) :
-    bindingDecision isAuthority action = some (rebacCheck action) := by
-  unfold bindingDecision
-  cases action <;> simp [h]
-
-theorem non_authority_cannot_bind_mutation
-    (action : Action) (hact : action = .interact ∨ action = .modify)
-    (hnotauth : isAuthority = false) :
-    bindingDecision isAuthority action = none := by
-  unfold bindingDecision
-  rcases hact with h | h <;> subst h <;> simp [hnotauth]
-
-theorem interest_can_answer_observe (_hnotauth : isAuthority = false) :
-    bindingDecision isAuthority .observe = some (rebacCheck .observe) := by
-  unfold bindingDecision; simp
+  | .observe => some (rebacCheck claim action)
+  | _ =>
+    if isAuthority view rep.hilbertCode then some (rebacCheck claim action) else none
 ```
 
-Verified to compile standalone. Not applied to `lean-rebac-core`, because that
-file needs Mathlib at a pinned toolchain and nothing currently consumes the
-result. The restatement is recorded so it can be applied when something does.
+`authority_binds_any_action`, `non_authority_cannot_bind_mutation`, and
+`interest_binding_observe` are now real theorems saying what the docstrings
+always claimed. Verified with `lake build Research` on the pinned v4.30.0
+toolchain: 2945 jobs, exit 0.
+
+This does **not** change the conclusion below. Authority binding is now proved;
+authority *unforgeability* still is not, and that is a different property
+needing a premise the corpus does not have.
 
 ## Where the guarantee comes from, in practice
 
@@ -308,6 +292,5 @@ the outage the gossip would be protecting against.
       explicitly (`VALUE_CHUNK_SIZE`), so a 128 KiB value is ~13 chunks and the
       naive failure does not occur. What remains untested is the driver at those
       sizes, which is [RFD 0019](0019-large-value-conformance.md).
-- [ ] Apply the `bindingDecision` restatement above to `lean-rebac-core`, if and
-      when anything depends on authority binding being proved. Until then the
-      standard is simply not to cite the vacuous theorems.
+- [x] **Done.** Merged to `lean-rebac-core` main as `8b13e75`. The standard
+      applied was: prove them or do not use the proof.
