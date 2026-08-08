@@ -164,14 +164,17 @@ The queue does not.
 
 - [ ] **What is `any` on the ingest side, beyond VRM?** `idtxcli` reads `.vrm`
       and `.usda`. Other source formats are unaccounted for.
-- [ ] **Where does `.glb` come from?** It is named as a transmission format but
-      appears in neither the CLI verbs nor the core export symbols.
+- [x] **`.glb` comes via VRM**, which is glTF plus humanoid and spring-bone
+      extensions, so a `.glb` is a VRM with those stripped. No new converter,
+      but the stripping step needs an owner and is not in `idtxcli` today.
 - [ ] **Does `idtxcli` need a scene verb**, so the whole pipeline can run
       headless without a Godot runtime? `flow/core` already has
       `idtx_core_export_avatar_to_scn`; only the CLI surface is missing.
-- [ ] **Is the conversion surface avatar-shaped only?** Every core export symbol
-      is `export_avatar_to_*`. Whether non-avatar assets (maps, props) go through
-      the same path is unclear from the API names.
+- [x] **Avatars now, general later.** Every core export symbol is
+      `export_avatar_to_*` because avatars were built first; maps and props are
+      intended to follow. The baker must therefore not hardcode avatar
+      assumptions into actor keys or queue names, even though only avatars work
+      today.
 - [ ] **What carries the provenance stamp** through casync-aria-storage, so a
       published artifact is still recognisable as derived when it comes back?
 - [ ] **Does repair get its own actor key?** A repair produces a new master from

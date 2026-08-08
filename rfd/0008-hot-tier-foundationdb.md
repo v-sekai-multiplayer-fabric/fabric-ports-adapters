@@ -43,8 +43,12 @@ So this is now a configuration choice rather than a missing capability.
 
 ## Remaining work
 
-- [ ] Decide whether the `foundationdb` feature is on by default for fabric
-      builds, given it hard-requires `libfdb_c.so` at build and run time.
+- [x] **Decided: the feature is on by default on the fork** (`0d7bcdde6`). The
+      fork exists to add the backend, so a build without it is not a
+      configuration anyone wants. The cost is that `universaldb` has 22
+      workspace dependents, so `cargo build` anywhere in the fork now requires
+      `libfdb_c.so`, including CI. Verified: `cargo check -p rivet-engine`
+      passes with no explicit flag.
 - [ ] Benchmark under load. There is correctness coverage but no performance
       data. FDB's **five-second transaction limit** interacts with Rivet's
       `TXN_TIMEOUT` in ways currently unmeasured, and a cold read on an

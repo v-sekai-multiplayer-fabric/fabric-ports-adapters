@@ -75,12 +75,20 @@ The verdict is resolved into a plain value **before** the backoff await, because
 a borrowed `dyn Error` is not `Sync` and holding one across the await makes the
 future non-`Send`.
 
-### The feature is off by default
+### The feature is on by default
 
-`libfdb_c.so` is required at build and run time. A default-on feature would
-break every build on a machine without FoundationDB installed. Selecting
-`FoundationDb` in config on a binary built without the feature is an explicit
-error, not a silent fallback to another backend.
+Originally off, on the grounds that `libfdb_c.so` is required at build and run
+time and a default-on feature breaks every build on a machine without
+FoundationDB installed.
+
+**Changed in `0d7bcdde6`:** the fork exists to add this backend, so a build
+without it is not a configuration anyone wants, and the default should say so.
+The consequence is not confined to the engine: `universaldb` has 22 workspace
+dependents, so every one of them now requires the client library, including in
+CI.
+
+Selecting `FoundationDb` in config on a binary built without the feature is
+still an explicit error, not a silent fallback to another backend.
 
 The crate expects `fdb.options` under `/usr/include/foundationdb`, which the
 runtime-only package does not ship; the `embedded-fdb-include` feature vendors
