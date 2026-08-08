@@ -8,6 +8,7 @@ it cost. [RFD 0000](0000-how-to-write-an-rfd.md) describes the conventions.
 | RFD | Title |
 |---|---|
 | [0000](0000-how-to-write-an-rfd.md) | How to write an RFD |
+| [0021](0021-when-structure-is-justified.md) | When structure is justified |
 
 ## Implemented and verified
 
@@ -43,7 +44,8 @@ index, cross-actor transactions, and a decomposition of Uro into actors.
 They contained real analysis, and it is recoverable from git history. It was
 removed from the index because a list of confident answers to questions nobody
 has asked reads as a backlog, and maintaining it costs more than rederiving it
-when there is a reason to.
+when there is a reason to. The limits that drove the removal are in
+[0021](0021-when-structure-is-justified.md).
 
 Removed in `485383a..`: 0005, 0006, 0009, 0012, 0020.
 

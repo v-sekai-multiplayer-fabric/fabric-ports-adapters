@@ -79,6 +79,23 @@ comment stating that the fork selects the backend by default.
 "It costs nothing" is not a reason to keep something. Nothing that is retained
 costs nothing.
 
+## Repository conventions
+
+Recorded here because they are decisions rather than preferences, and neither is
+discoverable from the code.
+
+**Commit messages are sentence case with no conventional-commit prefix.** Not
+`feat:`, `fix:`, or `refactor:`. "Collapse the substrate port", not
+`refactor: collapse the substrate port`. Earlier commits in this repository used
+prefixes and were rewritten to match; the history is uniform.
+
+**The repository has been renamed twice.** It began as
+`rivet-fabric-ports-adapters`, became `fabric-ports-adapters`, and is now
+`fabric-quickstart`. The second rename followed
+[RFD 0016](0016-collapse-the-substrate-port.md), after which the name described
+an architecture the repository no longer had. GitHub redirects from both prior
+names, so old clones and links still resolve.
+
 ## Consequences
 
 The suite is fast enough to run on every change and honest enough to be trusted
