@@ -59,10 +59,8 @@ an anonymous GHCR token request returns
 
 ## Consequences
 
-Anything else that runs Godot inherits this. If the zone-baker turns out to be a
-headless Godot process for its `.tscn` side
-([RFD 0006](0006-zone-baker-as-rivet-service.md)), it must use the same runtime,
-not an upstream release.
+Anything else that runs Godot inherits this and must use the same runtime, not
+an upstream release.
 
 The end-to-end MCP run recorded in [RFD 0007](0007-webtransport-in-guard.md)
 used the upstream build and has **not** been repeated against this one. It

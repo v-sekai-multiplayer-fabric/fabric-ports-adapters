@@ -2,9 +2,10 @@
 
 ## Status
 
-Proposed, and the cheapest item on the list. Split out of
-[RFD 0009](0009-cold-tier.md), which had bundled it with cold-tier
-offload. They share an S3 endpoint and nothing else.
+Proposed, and the cheapest item on the list. Originally bundled with a
+cold-storage tier, which has since been removed as having no consumer. Backup
+survived that removal because it protects data that exists rather than data that
+might.
 
 ## Problem
 

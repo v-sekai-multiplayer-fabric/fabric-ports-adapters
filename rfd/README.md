@@ -27,20 +27,27 @@ it cost. [RFD 0000](0000-how-to-write-an-rfd.md) describes the conventions.
 
 | RFD | Title | State |
 |---|---|---|
-| [0005](0005-zone-backend-as-rivet-service.md) | zone-backend (Uro) as a Rivet service | proposed |
-| [0006](0006-zone-baker-as-rivet-service.md) | zone-baker as a Rivet service | proposed |
 | [0007](0007-webtransport-in-guard.md) | WebTransport in Guard | steps 1-4 done on the fork |
 | [0008](0008-hot-tier-foundationdb.md) | Hot tier: FoundationDB as unified state | largely already true |
-| [0009](0009-cold-tier.md) | Cold tier: offload idle actor state | nothing implemented |
-| [0012](0012-actor-indexing-and-search.md) | Indexing and search without a shared database | proposed |
-| [0013](0013-foundationdb-backup.md) | FoundationDB backup | nothing implemented, cheapest item |
+| [0013](0013-foundationdb-backup.md) | FoundationDB backup | nothing implemented |
 | [0017](0017-engine-bring-up.md) | Engine bring-up and runner registration | code exists, never run |
 | [0018](0018-authority-and-the-trusted-substrate.md) | Authority, and what the substrate already guarantees | analysis |
 | [0019](0019-large-value-conformance.md) | Large-value conformance on FoundationDB | proposed, nothing run |
-| [0020](0020-cross-actor-transactions.md) | Cross-actor linearizable transactions | design: intents + txn record |
+
+## Removed
+
+Five RFDs were removed because nothing consumed them. They described systems
+that do not exist: a zone-baker, a cold storage tier, an actor-based search
+index, cross-actor transactions, and a decomposition of Uro into actors.
+
+They contained real analysis, and it is recoverable from git history. It was
+removed from the index because a list of confident answers to questions nobody
+has asked reads as a backlog, and maintaining it costs more than rederiving it
+when there is a reason to.
+
+Removed in `485383a..`: 0005, 0006, 0009, 0012, 0020.
 
 ## Where to start
 
 [0002](0002-allocate-addresses.md) took three attempts to get right and explains
-why the bootstrap looks the way it does. [0012](0012-actor-indexing-and-search.md)
-is the one with the most reusable design in it.
+why the bootstrap looks the way it does.

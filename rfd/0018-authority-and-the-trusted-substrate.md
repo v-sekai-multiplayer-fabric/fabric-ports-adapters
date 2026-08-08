@@ -2,9 +2,13 @@
 
 ## Status
 
-Analysis, not a build decision. Records what is proven, what the substrate
-supplies, and which of the two is doing the work. Supersedes the authorisation
-reasoning in [RFD 0005](0005-zone-backend-as-rivet-service.md).
+Analysis. Records what Rivet guarantees, what the Lean proofs establish, and
+which of the two is doing the work.
+
+The zone-authority half was written against a decomposition that does not exist
+and has been removed with RFD 0005. What remains, and what this RFD is now for,
+is the **documented actor semantics** below: they describe the platform as it
+is, and anything built on Rivet depends on them.
 
 ## Problem
 
@@ -208,9 +212,9 @@ From `limits.mdx`:
 | Hibernation wake | 90s |
 | `onRequest` handler | 60s, from `actionTimeout` |
 
-The 15s figure bounds how expensive connect-time authorisation may be, which is
-the budget the posture question in
-[RFD 0005](0005-zone-backend-as-rivet-service.md) has to fit inside.
+The 15s figure bounds how expensive any connect-time work may be, including
+authorisation. Anything that must happen before a connection is usable has to
+fit inside it.
 
 ## Actors do not operate without the engine
 
@@ -260,7 +264,6 @@ the outage the gossip would be protecting against.
       explicitly (`VALUE_CHUNK_SIZE`), so a 128 KiB value is ~13 chunks and the
       naive failure does not occur. What remains untested is the driver at those
       sizes, which is [RFD 0019](0019-large-value-conformance.md).
-- [ ] Should `promoteToAuthority` check geometric containment as well as
-      capacity?
 - [ ] Are the two vacuous theorems in `ReBAC.lean` intended to be proved, or are
       they documentation of an assumption the substrate is expected to discharge?
+      Worth knowing before anyone cites that file as an authorisation model.

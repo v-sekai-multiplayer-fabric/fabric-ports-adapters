@@ -42,10 +42,13 @@ values. A test asserts the rejection case, so the constraint cannot be
 regressed silently.
 
 This interacts with job duration. Any workload whose unit of work can outlive
-`request_lifespan` needs either a longer lifespan or an asynchronous
-submit-and-poll protocol, and that choice changes the protocol rather than just
-a number. See [RFD 0006](0006-zone-baker-as-rivet-service.md), where a bake can
-plausibly exceed it.
+`request_lifespan` needs either a longer lifespan or an asynchronous protocol,
+and that choice changes the protocol rather than just a number.
+
+Rivet's durable per-actor queue is the intended mechanism: queue messages are
+persisted and survive sleep and restart, so a long job outlives the request that
+submitted it. `request_lifespan` bounds the runner's outbound request, not the
+work.
 
 ## Registration shape
 

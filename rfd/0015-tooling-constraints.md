@@ -28,10 +28,7 @@ addresses. Keeping the dependency list empty means `mix test` works on a fresh
 checkout with no network.
 
 This is a real constraint and not a preference. Adding a dependency is allowed,
-but it changes the character of the repo and should be a deliberate choice. See
-[RFD 0006](0006-zone-baker-as-rivet-service.md), where taking `stage_runtime`
-would be the first one, and where keeping the baker as a separate Mix
-application avoids the question.
+but it changes the character of the repo and should be a deliberate choice.
 
 ## Decision: tests do not touch the substrate
 
