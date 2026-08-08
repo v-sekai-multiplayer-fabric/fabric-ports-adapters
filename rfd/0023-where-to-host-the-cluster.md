@@ -1,0 +1,131 @@
+# RFD 0023 — Where to host the fabric cluster
+
+## Status
+
+Proposed. Prices surveyed **August 2026** and are volatile: Hetzner raised cloud
+prices three times during 2026, most recently on 15 June. Re-check before
+committing.
+
+## Requirements, from what has been measured
+
+Not guessed. These come from the cluster that actually ran.
+
+| Component | Needs | Source |
+|---|---|---|
+| FoundationDB × 3 | 4 GB per process recommended; ran at 2 GB and `status` warned | [RFD 0008](0008-hot-tier-foundationdb.md) |
+| Rivet Engine × 1 | `libfdb_c.so`, public ingress on 6420 | [RFD 0004](0004-image-provenance.md) |
+| Godot zone × N | 43.8 MiB idle; a 100 MB conversion needs roughly 300–500 MB | [RFD 0022](0022-glb-to-godot-scene.md) |
+| Storage | 3 × 10 GB volumes provisioned on the Fly run | [RFD 0002](0002-allocate-addresses.md) |
+| Backup target | off-host, S3-compatible | [RFD 0013](0013-foundationdb-backup.md) |
+
+So roughly **16–24 GB RAM, ~100 GB disk, one public IP**, plus somewhere else
+entirely for backups.
+
+## The tension that decides this
+
+`double` redundancy tolerates losing one machine. That is the property
+[RFD 0002](0002-allocate-addresses.md) verified: *fault tolerance 1 machine*.
+
+**On a single host, three FoundationDB nodes are three processes, not three
+machines.** Losing the host loses all of them at once, and the redundancy is
+decoration. So the question is not simply "cheapest" but which of two different
+things is being bought:
+
+- **Cheapest that runs the stack** — one box, everything containerised.
+  Fine for development and for proving the pipeline. Not fault tolerant.
+- **Cheapest that keeps the fault tolerance already designed for** — three
+  separate machines, which is a different and not necessarily larger bill.
+
+## Prices, August 2026
+
+| Option | Spec | Monthly | Machines |
+|---|---|---|---|
+| [Hetzner AX41](https://www.hetzner.com/dedicated-rootserver/ax41/) dedicated | Ryzen 5 3600, 64 GB, 2 × 512 GB NVMe | ~€49 | 1 |
+| [Hetzner CPX22](https://northflank.com/blog/hetzner-cloud-server-price-increases) cloud | shared vCPU | €19.49 each | n |
+| [Hetzner CX23](https://costgoat.com/pricing/hetzner) cloud | shared vCPU, entry | €5.49 each | n |
+| [Contabo](https://contabo.com/blog/best-vps-hosting-providers/) entry VPS | 4 vCPU, 6 GB, 100 GB NVMe, 32 TB traffic | €4.50 each | n |
+| [Netcup](http://netcupvoucher.com/blog/netcup-vs-hetzner-budget-servers-2026) entry VPS | 2 vCPU, 2 GB, 64 GB SSD | €3.35 each | n |
+
+### The June 2026 increase changes the usual answer
+
+Hetzner Cloud is the reflexive recommendation and is no longer the cheap option
+for this shape of workload. On 15 June 2026 CPX rose about 144% and CCX by up to
+209%. A four-VM cloud deployment on CPX22 is now roughly €78/month, which is
+**more than the AX41 dedicated box with 64 GB of RAM**.
+
+Netcup is reported not to have moved since May 2026, which matters as much as
+the headline number: a provider that repriced three times in a year is a
+different risk from one that did not.
+
+## Options
+
+### A. One Hetzner AX41, everything containerised — ~€49/month
+
+64 GB RAM against a 16–24 GB requirement, so three FoundationDB nodes get their
+recommended 4 GB each with room for zones doing 100 MB conversions. Quadlets
+already work this way ([RFD 0001](0001-substrate-port.md)), so the local
+bring-up transfers directly.
+
+**Not fault tolerant.** One host, one failure domain. Honest for development.
+
+### B. Three Contabo VPS — ~€13.50/month
+
+6 GB each, so one FoundationDB process per machine at above the recommended
+4 GB, across three real failure domains. Cheaper than option A **and** actually
+distributed, which is the surprising result of this survey.
+
+Contabo's performance is widely described as variable and best suited to simpler
+workloads. FoundationDB is latency-sensitive, and a cold read on the undersized
+Fly cluster was already observed at `duration_ms=2200`
+([RFD 0008](0008-hot-tier-foundationdb.md)). This needs measuring, not assuming.
+
+### C. Three Netcup VPS — ~€10/month
+
+Cheapest genuinely distributed option, and the most stable pricing. But 2 GB per
+machine is **below** FoundationDB's 4 GB recommendation, and 2 GB is exactly
+what the Fly deployment ran while `status` complained. Leaves nothing for a
+Godot zone doing a 100 MB conversion, so zones would need their own machines.
+
+### D. Fly.io — the configuration already built
+
+`fdb-up` and `engine-up` target it, and it was verified working. Per-machine
+plus per-volume billing, and the earlier deployment was 5 machines and 30 GB of
+volumes. Convenient rather than cheap, and the tooling now targets quadlets
+instead ([RFD 0016](0016-collapse-the-substrate-port.md)).
+
+## Recommendation
+
+**Option A for now, option B when fault tolerance is required.**
+
+Nothing has run end to end yet: the engine image has never been built
+([RFD 0017](0017-engine-bring-up.md)), so the immediate need is one machine that
+can run the whole stack while that is proved. 64 GB for €49 buys enough headroom
+that sizing stops being a variable while other things are debugged, and matches
+the quadlet bring-up already working locally.
+
+Option B is the better production answer and is cheaper, which is unusual enough
+to double-check before relying on it. Move when the fault tolerance is worth
+having, and benchmark FoundationDB on Contabo first.
+
+**Backups go elsewhere regardless.** [RFD 0013](0013-foundationdb-backup.md)
+requires an off-host target, and a backup on the same machine as the cluster is
+not a backup. That is a separate small cost on any of these options.
+
+## What this does not account for
+
+- **No benchmarks.** Every option is priced on RAM and core count, and
+  FoundationDB is sensitive to disk latency and network jitter, neither of which
+  appears in a price table.
+- **Bandwidth.** A 100 MB conversion moves ~230 MB across the wire in base64.
+  Contabo advertises 32 TB; the others are not compared here.
+- **Prices move.** Hetzner changed three times in 2026. This is a snapshot.
+- **Nothing has been deployed to any of these**, including the Fly configuration
+  that once worked, since it was destroyed.
+
+## Open questions
+
+- [ ] Does FoundationDB perform acceptably on Contabo, given the variability
+      reports? That decides whether option B is real.
+- [ ] Where does the off-host backup live, and what does it cost?
+- [ ] Do zones need their own machines, or do they share with FoundationDB? A
+      100 MB conversion next to a database is contention worth measuring.
