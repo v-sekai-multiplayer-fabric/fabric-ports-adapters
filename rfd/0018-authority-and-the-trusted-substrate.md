@@ -62,12 +62,56 @@ Two specific gaps:
   (`z.entities.size < cap - headroom`). Nothing checks that the entity falls in
   the zone's range.
 
-Also worth recording: the two theorems in `ReBAC.lean` that would bind authority
-to mutation, `rebac_requires_authority_for_mutation` and
-`non_authority_cannot_bind_mutation`, are stated as `True := trivial` with every
+### The two authority theorems are vacuous, and are not cited here
+
+`ReBAC.lean`'s `rebac_requires_authority_for_mutation` and
+`non_authority_cannot_bind_mutation` are stated as `True := trivial` with every
 hypothesis unused. Their docstrings describe the intended property; the formal
-content is vacuous. That file is imported by `Research.lean`, which declares
-itself "NOT on the CI production gate… aspirational".
+content is provable regardless of any input. That file is imported by
+`Research.lean`, which declares itself "NOT on the CI production gate…
+aspirational".
+
+**Standard applied: prove them or do not use the proof.** This RFD does not use
+them. Nothing here rests on authority binding being formally established.
+
+#### Why they cannot be proved as written
+
+The statement needs a concept the model lacks. `rebacCheck : PlayerClaim →
+Action → Bool` is a pure function with no notion of who is asking, so "not
+binding" is not expressible about it. The fix is to name the missing concept
+rather than to strengthen the proof.
+
+The following restatement compiles under Lean 4, with stand-ins for the
+surrounding definitions so it needs no Mathlib:
+
+```lean
+/-- The decision this node is entitled to make.
+    `none` means "not binding here; forward to the authority zone". -/
+def bindingDecision (auth : Bool) (action : Action) : Option Bool :=
+  match action with
+  | .observe => some (rebacCheck action)
+  | _        => if auth then some (rebacCheck action) else none
+
+theorem authority_binds_any_action (action : Action) (h : isAuthority = true) :
+    bindingDecision isAuthority action = some (rebacCheck action) := by
+  unfold bindingDecision
+  cases action <;> simp [h]
+
+theorem non_authority_cannot_bind_mutation
+    (action : Action) (hact : action = .interact ∨ action = .modify)
+    (hnotauth : isAuthority = false) :
+    bindingDecision isAuthority action = none := by
+  unfold bindingDecision
+  rcases hact with h | h <;> subst h <;> simp [hnotauth]
+
+theorem interest_can_answer_observe (_hnotauth : isAuthority = false) :
+    bindingDecision isAuthority .observe = some (rebacCheck .observe) := by
+  unfold bindingDecision; simp
+```
+
+Verified to compile standalone. Not applied to `lean-rebac-core`, because that
+file needs Mathlib at a pinned toolchain and nothing currently consumes the
+result. The restatement is recorded so it can be applied when something does.
 
 ## Where the guarantee comes from, in practice
 
@@ -264,6 +308,6 @@ the outage the gossip would be protecting against.
       explicitly (`VALUE_CHUNK_SIZE`), so a 128 KiB value is ~13 chunks and the
       naive failure does not occur. What remains untested is the driver at those
       sizes, which is [RFD 0019](0019-large-value-conformance.md).
-- [ ] Are the two vacuous theorems in `ReBAC.lean` intended to be proved, or are
-      they documentation of an assumption the substrate is expected to discharge?
-      Worth knowing before anyone cites that file as an authorisation model.
+- [ ] Apply the `bindingDecision` restatement above to `lean-rebac-core`, if and
+      when anything depends on authority binding being proved. Until then the
+      standard is simply not to cite the vacuous theorems.
