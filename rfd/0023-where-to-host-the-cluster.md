@@ -57,6 +57,42 @@ Netcup is reported not to have moved since May 2026, which matters as much as
 the headline number: a provider that repriced three times in a year is a
 different risk from one that did not.
 
+## Accounts that already exist
+
+DigitalOcean, Fly.io, and Google are already set up. That is worth real money
+even though none of them is the cheapest line item, because an existing account
+has no procurement, no new security review, no separate invoice, and possibly
+credits already paid for.
+
+| Provider | Relevant offer | Monthly for our shape |
+|---|---|---|
+| [DigitalOcean](https://www.digitalocean.com/pricing/droplets) Premium AMD NVMe | 8 GiB tier at $54 | ~$162 for three |
+| [DigitalOcean](https://www.digitalocean.com/pricing/droplets) General Purpose | 8 GB from $63 | ~$189 for three |
+| [DigitalOcean](https://www.digitalocean.com/pricing/droplets) Memory-Optimized | 16 GB from $84 | ~$252 for three |
+| Fly.io | per machine plus per volume | 5 machines + 30 GB previously |
+| Google Compute | always-on VMs, sustained-use discounts | not surveyed |
+
+So DigitalOcean is roughly **three times** the Hetzner dedicated box for
+equivalent RAM, and ten times a three-node Contabo deployment. That is the
+honest number.
+
+### The part that changes the recommendation anyway
+
+**DigitalOcean Spaces is S3-compatible**, and Google Cloud Storage has an
+S3-compatible surface. [RFD 0013](0013-foundationdb-backup.md) requires an
+off-host S3 target and deliberately leaves the vendor open, because `fdbbackup`
+only sees a `blobstore://` URL.
+
+That requirement is satisfied today, on an account that already exists, with no
+new vendor and no versitygw to operate. It is the single cheapest thing on this
+page to actually do, and it closes a gap where the volumes are currently the
+only copy of the data.
+
+**Fly.io is already targeted by working code.** `deploy.sh` brought up a real
+three-node cluster there, and the engine and zone Containerfiles were written
+for it. It is not the cheapest, but it is the only option on this page where the
+deployment path has been executed rather than described.
+
 ## Options
 
 ### A. One Hetzner AX41, everything containerised — ~€49/month
@@ -93,9 +129,25 @@ plus per-volume billing, and the earlier deployment was 5 machines and 30 GB of
 volumes. Convenient rather than cheap, and the tooling now targets quadlets
 instead ([RFD 0016](0016-collapse-the-substrate-port.md)).
 
+### E. DigitalOcean — existing account, ~3x the price
+
+Three 8 GiB droplets at roughly $162/month against ~€49 for a dedicated box with
+64 GB. The premium buys an account that already exists, an API the team knows,
+and Spaces for backups in the same place.
+
+Defensible if the time cost of onboarding a new vendor is worth more than
+~$110/month, which for a small team it may well be.
+
 ## Recommendation
 
-**Option A for now, option B when fault tolerance is required.**
+**Split the decision, because the two halves have different answers.**
+
+**Backups: DigitalOcean Spaces, now.** Existing account, S3-compatible,
+satisfies [RFD 0013](0013-foundationdb-backup.md) with no new vendor and no
+gateway to run. It is cheap, it is the only item here that protects data that
+exists, and there is no reason to wait for the compute decision.
+
+**Compute: option A for now, option B when fault tolerance is required.**
 
 Nothing has run end to end yet: the engine image has never been built
 ([RFD 0017](0017-engine-bring-up.md)), so the immediate need is one machine that
@@ -107,9 +159,9 @@ Option B is the better production answer and is cheaper, which is unusual enough
 to double-check before relying on it. Move when the fault tolerance is worth
 having, and benchmark FoundationDB on Contabo first.
 
-**Backups go elsewhere regardless.** [RFD 0013](0013-foundationdb-backup.md)
-requires an off-host target, and a backup on the same machine as the cluster is
-not a backup. That is a separate small cost on any of these options.
+DigitalOcean is the answer if a new vendor is not wanted, at roughly three times
+the price. That is a legitimate trade rather than a mistake, and it should be
+made deliberately rather than by default.
 
 ## What this does not account for
 
@@ -126,6 +178,9 @@ not a backup. That is a separate small cost on any of these options.
 
 - [ ] Does FoundationDB perform acceptably on Contabo, given the variability
       reports? That decides whether option B is real.
-- [ ] Where does the off-host backup live, and what does it cost?
+- [ ] Is there unused credit on any of the existing accounts? That could
+      reverse the pricing entirely and is not visible from published rates.
+- [ ] What does Google Compute cost for this shape? Not surveyed, and the
+      account exists.
 - [ ] Do zones need their own machines, or do they share with FoundationDB? A
       100 MB conversion next to a database is contention worth measuring.
