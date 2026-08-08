@@ -111,117 +111,12 @@ not exist yet**, and they are blocked in two places rather than one: the QUIC
 listener is built but never bound, and the tunnel behind it has no datagram
 frame. See [RFD 0007](0007-webtransport-in-guard.md).
 
-### What a WebTransport demo has to prove
+### The demo lives in its own RFD
 
-A demo that runs MCP over a WebTransport stream proves nothing. A WebTransport
-bidirectional stream is reliable and ordered, exactly like a WebSocket, so
-moving the asset path onto one is a port rather than a demonstration. The bar is
-higher: **the demo must be something WebSocket cannot do at all.**
-
-**Independent streams alone do not clear it.** The obvious pitch is a bulk
-upload on one stream and control messages on another with no head-of-line
-blocking between them. A client can open two WebSockets, get two TCP
-connections, and obtain that same isolation. Cheaper is not impossible.
-
-But that objection only holds while the two flows are considered in isolation.
-Put them on **one bottleneck link** and it collapses, which is the demo below.
-
-### The real problem: moving while content loads
-
-A player is standing in a zone when new content arrives. They keep walking
-around while a 100 MB asset streams in. If their movement stalls until the
-asset lands, the experience is broken, and this is the ordinary case in social
-VR rather than an edge case.
-
-Two actors, each doing real work already built:
-
-- **Zone A**, the asset zone, converting and streaming a 100 MB glb. This is
-  the path the rest of this RFD documents, measured at 43 MB in 17 s.
-- **Zone B**, the live zone, serving pose and scene state at 64 Hz.
-
-**Force the contention.** Cap the bottleneck with `tc netem` so the bulk
-transfer saturates it, and add 2% loss with 50 ms RTT. Then measure Zone B's
-round-trip latency during Zone A's transfer.
-`container-runner/examples/e2e-test/load-test.mjs` already reports `p50`, `p95`,
-`p99`, and `max`, so the harness exists.
-
-### Why two WebSockets do not save the baseline
-
-This is the part that overturns the rejection above. Two TCP connections are
-independent at the transport layer and **not** independent on the wire. They
-share the bottleneck queue. A bulk TCP transfer fills that queue, and every
-pose packet then waits behind bulk bytes that TCP has no reason to consider
-less urgent. The stall moves from the transport into the network path.
-
-Nothing in the application can fix it. TCP offers no way to say "this
-connection yields to that one", because prioritisation across two independent
-connections is not a thing the kernel or the network can express.
-
-One QUIC connection can express exactly that. Two streams, one congestion
-controller, and a sender that knows the pose stream outranks the bulk stream.
-Add datagrams for pose and the stale ones are dropped rather than queued at
-all.
-
-**That is the WebSocket-impossible claim, stated so it can fail:** on a shared
-bottleneck, WebTransport holds Zone B's p99 near the 15.6 ms tick while Zone A
-saturates the link, and two WebSockets cannot, at any connection count.
-
-### One constraint this design has to respect
-
-A WebTransport session is established by a single CONNECT to a single URL, and
-`RequestContext` routes on hostname plus path. Streams inside a session carry
-no path of their own. So one session resolves to **one** actor unless the first
-bytes of each stream name their target, which is application-level demultiplexing
-that does not exist yet.
-
-This matters because the cross-actor prioritisation above needs both zones on
-one connection. Two sessions would restore two congestion controllers and give
-back the advantage being measured. The stream header is therefore not optional
-framing, it is the mechanism, and it is the same demultiplexing the tunnel
-needs in step 2 below.
-
-### What the demo measures
-
-| | WebSocket, two connections | WebTransport, one session |
-|---|---|---|
-| Zone A bulk transfer | saturates bottleneck | saturates bottleneck |
-| Zone B p99 during transfer | expected to climb with queue depth | expected flat near tick |
-| Cross-flow priority | not expressible | stream priority, or datagrams |
-| Stale pose on loss | retransmitted, blocks fresher | dropped, next tick supersedes |
-
-Asset conversion stays on a reliable stream, where a 100 MB upload genuinely
-wants ordering. It is the load being generated, not the thing being proved.
-
-If Zone B's p99 stays flat on both, the demo has disproved its own premise. That
-is still worth knowing, because `rfd/0023` chose this transport on exactly this
-reasoning, and the cost of the tunnel work below is only justified if the gap is
-real.
-
-### What blocks it
-
-QUIC is not the blocker. `h3_server.rs` already calls `.enable_datagram(true)`,
-and `WebTransportSession` exposes `datagram_reader` and `datagram_sender`.
-
-The tunnel is. `pegboard-gateway` carries traffic over `universalpubsub` in a
-WebSocket shape in both directions, `tunnel_to_ws_task.rs` and
-`ws_to_tunnel_task.rs`, and contains no datagram concept at all. A datagram
-arriving at Guard has nowhere to go.
-
-So the work is, in order:
-
-1. Steps 5 and 6 below. Nothing reaches an actor over QUIC until the listener is
-   bound and routed, whatever the payload.
-2. Stream demultiplexing, so one session reaches both zones, and a datagram
-   frame in the tunnel with a lossy path for it. This is the
-   substantial piece and the one `h3_server.rs` calls "a separate change".
-   Reliable delivery over `universalpubsub` would defeat the purpose, so the
-   tunnel has to be allowed to drop.
-3. Zone-side send and receive, and a Godot client using `WebTransportPeer`
-   datagrams.
-4. The measurement above.
-
-Step 2 is where the honesty is. It is not a port of existing plumbing, it is a
-new delivery mode through a broker that currently guarantees the opposite.
+Proving the transport needs something WebSocket cannot do, which the asset path
+is not: a 100 MB upload genuinely wants reliability and ordering. See
+[RFD 0024](0024-prove-webtransport-with-shadermotion.md), which uses this path
+as the bulk load it contends against.
 
 ### What is actually built, verified against the code
 
