@@ -2,7 +2,8 @@
 
 ## Status
 
-Proposed. Prices surveyed **August 2026** and are volatile: Hetzner raised cloud
+Proposed as a survey. The decision it led to is
+[RFD 0025](0025-host-on-fly.md). Prices surveyed **August 2026** and are volatile: Hetzner raised cloud
 prices three times during 2026, most recently on 15 June. Re-check before
 committing.
 
@@ -102,15 +103,16 @@ honest number.
 
 ### The part that changes the recommendation anyway
 
-**DigitalOcean Spaces is S3-compatible**, and Google Cloud Storage has an
-S3-compatible surface. [RFD 0013](0013-foundationdb-backup.md) requires an
-off-host S3 target and deliberately leaves the vendor open, because `fdbbackup`
-only sees a `blobstore://` URL.
+**Every one of them can host the backups.** DigitalOcean Spaces, Google Cloud
+Storage, and Fly's Tigris all present an S3-compatible surface, and
+[RFD 0013](0013-foundationdb-backup.md) deliberately leaves the vendor open
+because `fdbbackup` only ever sees a `blobstore://` URL.
 
-That requirement is satisfied today, on an account that already exists, with no
-new vendor and no versitygw to operate. It is the single cheapest thing on this
-page to actually do, and it closes a gap where the volumes are currently the
-only copy of the data.
+So this requirement does not discriminate between the accounts, and it is the
+single cheapest thing on this page to actually do. It closes a gap where the
+volumes are currently the only copy of the data.
+[RFD 0025](0025-host-on-fly.md) picks Tigris, on zero egress rather than on
+storage price.
 
 **Fly.io is already targeted by working code.** `deploy.sh` brought up a real
 three-node cluster there, and the engine and zone Containerfiles were written
@@ -173,82 +175,18 @@ machine is **below** FoundationDB's 4 GB recommendation, and 2 GB is exactly
 what the Fly deployment ran while `status` complained. Leaves nothing for a
 Godot zone doing a 100 MB conversion, so zones would need their own machines.
 
-### D. Fly.io — the configuration already built, ~$51/month
+### D. Fly.io — the configuration already built, ~$53/month
 
-The only option whose sizing is not a guess, because it is checked in.
-`self-host/fly/*/fly.toml` specifies `shared-cpu-2x` at `2gb` for all three
-apps, and `foundationdb/fly.toml` provisions `initial_size = "10gb"` per node.
+The only option whose sizing is checked in rather than estimated:
+`self-host/fly/*/fly.toml` at `shared-cpu-2x`/`2gb` with 10 GB volumes. Four
+machines, ~8 GB total, plus $2 for the dedicated IPv4 that inbound UDP requires.
 
-Fly states the rule as "the price of a named CPU/RAM preset, plus about $5 per
-30 days per GB of additional RAM". Backing the CPU share out of the published
-`shared-cpu-1x` 256 MB price of $2.02 gives ~$0.77 of CPU, so `shared-cpu-2x`
-at 2 GB is ~$1.54 + $10.00 = **~$11.54/machine**.
+Two properties no other option has: the zone scales to zero, so idle conversion
+capacity is free, and the deployment has actually been executed.
 
-| Item | From | Monthly |
-|---|---|---|
-| 3 × FoundationDB, `shared-cpu-2x` 2 GB | `foundationdb/fly.toml` | $34.62 |
-| 1 × engine, `min_machines_running = 1` | `engine/fly.toml` | $11.54 |
-| Zone, `min_machines_running = 0`, `auto_stop = "suspend"` | `godot-zone/fly.toml` | ~$0 idle |
-| 3 × 10 GB volumes at $0.15/GB | `initial_size` | $4.50 |
-| Dedicated IPv4, required for UDP | RFD 0024 | $2.00 |
-| **Always-on total** | | **~$52.66** |
-
-Egress is extra at $0.02/GB in North America and Europe.
-
-**The zone line is the interesting one.** It is configured to scale to zero and
-suspend, so conversion capacity costs nothing until someone uploads a glb. On a
-rented box that capacity is paid for whether or not it is used. This is the one
-place where the pricing model matches the actor model rather than fighting it,
-and it is why Fly is not simply "convenient rather than cheap".
-
-The rest is expensive: ~$51 buys 8 GB across four machines, which is roughly
-what one AX41 costs with 64 GB.
-
-**On the free allowance.** The legacy Hobby allowance is three `shared-cpu-1x`
-**256 MB** VMs plus 3 GB of volume. It is wrong to price this as a flat discount:
-the question is which roles fit, and two of them do.
-
-A FoundationDB *coordinator* is not a data node. Upstream describes coordinators
-as "communicating and storing a small amount of shared state", with the
-performance impact of acting as one "negligible". The 4 GB per-process guidance
-is for storage and log roles. Three coordinators at 256 MB with 1 GB of volume
-each is exactly the free allowance, and `foundationdb/fly.toml` already exposes
-`FDB_CLASS`, so this is configuration rather than new code.
-
-The second fit is the backup agent from
-[RFD 0013](0013-foundationdb-backup.md). It streams mutations to a blobstore and
-holds no database state.
-
-**What this saves is not mainly money.** Coordinators were already riding along
-on the data nodes for free, so moving them off saves nothing directly; the
-backup agent saves one machine, ~$11.54, only if it would otherwise get a
-dedicated one. The real gain is stability, and `foundationdb/fly.toml` says why
-in its own comment: "a suspended coordinator takes the cluster down", and
-"coordinators are addressed by IP, so machine count and identity are load
-bearing". That constraint is the entire subject of
-[RFD 0002](0002-allocate-addresses.md).
-
-Coordinators on three machines that never resize and never get recreated make
-the data nodes ordinary again. They can be resized, restarted, or replaced
-without touching the quorum that RFD 0002 had to allocate static addresses to
-protect. The free tier stops being a discount and becomes a place to put the
-role that must not move.
-
-**Unverified, and cheap to verify.** No source states that `fdbserver` starts in
-256 MB, only that the coordination state is small; `fdbserver` also defaults to
-an 8 GiB memory *limit*, which is a cap rather than a reservation. The quadlet
-rig exists precisely to answer this without paying anyone, so this should be
-tested locally before being relied on.
-
-Fly's current docs say plainly that "current customers use pay-as-you-go pricing
-with no included monthly credits", so whether the allowance applies at all is
-account-specific and settled by an invoice, not the rate card.
-
-Fly's current docs say plainly that "current customers use pay-as-you-go pricing
-with no included monthly credits", and no $15/month credit appears in any
-published plan. If the account does carry one, it is account-specific and worth
-confirming against an actual invoice rather than the rate card. At $15/month it
-would put Fly at **~$36/month net**, which does not change the ordering below.
+**This is the option that was chosen.** Pulled out into
+[RFD 0025](0025-host-on-fly.md), which carries the full bill, the UDP
+constraints, the free-allowance analysis, and what is verified.
 
 ### E. DigitalOcean — existing account, ~3x the price
 
@@ -302,62 +240,33 @@ side: the pricing model either matches the actor lifecycle or it does not.
 
 ## Recommendation
 
-**Split the decision, because the two halves have different answers.**
+**Fly.io, recorded in [RFD 0025](0025-host-on-fly.md).** Backups to Tigris on the
+same account, which satisfies [RFD 0013](0013-foundationdb-backup.md) with no new
+vendor.
 
-**Backups: Tigris, now.** Fly's own object storage is S3-compatible, which is
-all [RFD 0013](0013-foundationdb-backup.md) requires, and it beats DigitalOcean
-Spaces on both axes that matter here:
+The survey is kept because the decision is not obvious from price alone, and
+because the runners-up matter if the choice is revisited:
 
-| | Tigris | DO Spaces |
-|---|---|---|
-| Storage | $0.02/GB, first 5 GB free | $5/month minimum for 250 GB |
-| Egress | none charged | metered beyond 1 TB |
-| Account | same as compute | separate |
+| Option | Compute | With 1 TB demo traffic | Notes |
+|---|---|---|---|
+| A. Hetzner AX41 | ~€49 | included | 64 GB, but one failure domain |
+| B. Three Contabo VPS | ~€13.50 | included | cheapest **and** more redundant |
+| C. Three Netcup VPS | ~€10 | included | leaves no headroom |
+| D. Fly.io | ~$53 | ~$73 | chosen, see RFD 0025 |
+| E. DigitalOcean | ~$162 | ~$162 | ~3x for compute |
+| F. Google Compute | ~$52 | **~$172** | Premium egress dominates |
 
-Spaces bills a $5 floor whether the backup is 2 GB or 200 GB. More importantly
-Tigris charges nothing for egress, and the one time a backup is read in full is
-a restore, which is the worst possible moment to meter bandwidth.
+**The cheapest option was declined knowingly.** Option B is roughly a quarter of
+Fly and is genuinely distributed, where option A puts three FoundationDB
+processes on one host and calls it three nodes. Fly was chosen for a deployment
+that already works and a billing model that matches the actor lifecycle, not
+because B was worse on price. If cost becomes the binding constraint, B is where
+to go, after benchmarking FoundationDB on Contabo.
 
-Prefer Tigris. It is the only item here that protects data that already exists,
-and it does not depend on the compute decision.
-
-**Compute: option A for now, option B when fault tolerance is required.**
-
-Nothing has run end to end yet: the engine image has never been built
-([RFD 0017](0017-engine-bring-up.md)), so the immediate need is one machine that
-can run the whole stack while that is proved. 64 GB for €49 buys enough headroom
-that sizing stops being a variable while other things are debugged, and matches
-the quadlet bring-up already working locally.
-
-Option B is the better production answer and is cheaper, which is unusual enough
-to double-check before relying on it. Move when the fault tolerance is worth
-having, and benchmark FoundationDB on Contabo first.
-
-**If no new vendor is wanted, the answer is Fly, not DigitalOcean.** Now that
-all three existing accounts are priced against the same shape, they separate
-cleanly:
-
-| Existing account | Control plane | With 1 TB demo traffic | UDP ready? | Config written? |
-|---|---|---|---|---|
-| Fly.io | ~$53 | ~$73 | dedicated IPv4, $2 | yes, and it ran |
-| Google Compute | ~$52 | **~$172** | yes | no |
-| DigitalOcean | ~$162 | ~$162, included | yes | no |
-
-Egress reorders these once RFD 0024 runs. At the control plane alone Fly and
-Google are within a dollar; at a terabyte Google is the most expensive option on
-the page and DigitalOcean, whose included transfer absorbs the whole experiment,
-stops looking absurd.
-
-Fly still wins among the three: its deployment already exists and has been
-executed, its zone bills nothing while idle, and $20 per terabyte is the second
-cheapest metered rate here. Google's committed-use discount is the cheaper
-compute number, but it buys a year of certainty about a stack that has not run
-yet, and Premium Tier egress gives back more than the discount saves.
-
-DigitalOcean is 3x either of them for compute, and Tigris removes the reason to
-use it for storage too. Its earlier framing here as the incumbent-account option
-was wrong: it is the most expensive account already held, not the convenient
-one.
+**Egress is what reorders the table.** At the control plane alone Fly and Google
+are within a dollar. At a terabyte Google is the most expensive option here, and
+DigitalOcean's included transfer stops looking absurd. Bare metal and VPS never
+reach the meter at all.
 
 ## What this does not account for
 
@@ -380,11 +289,5 @@ one.
 - [ ] Does Google Standard Tier networking distort the latency measurement? It
       avoids the egress bill by leaving the backbone, which is exactly the
       variable RFD 0024 is measuring.
-- [ ] Does `fdbserver` start and hold a coordinator quorum in 256 MB? If it
-      does, the free allowance can host the role that must not move. Testable on
-      the quadlet rig for nothing.
-- [ ] Does the Fly account carry a monthly credit? Published plans show none,
-      and the legacy allowance is too small to run FoundationDB. An invoice
-      settles it; the rate card does not.
 - [ ] Do zones need their own machines, or do they share with FoundationDB? A
       100 MB conversion next to a database is contention worth measuring.
