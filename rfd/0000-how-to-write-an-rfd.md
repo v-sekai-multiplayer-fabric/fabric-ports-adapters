@@ -115,5 +115,12 @@ cannot read minds.
 `rfd/NNNN-kebab-case-title.md`, four digits, allocated in order. This one is
 0000 because it is about the process rather than the system.
 
-`rfd/README.md` indexes them, split by whether they are implemented or proposed.
-Update it in the same change that adds an RFD.
+There is deliberately **no index file**. One existed, restating every RFD's
+number, title, and status; it desynchronised three times because that
+information already lives in the files and nothing failed when the copy was
+wrong. The directory listing is the index. See
+[RFD 0021](0021-when-structure-is-justified.md).
+
+A consequence worth accepting: an RFD's status is discoverable only by opening
+it. That is the cost of not keeping a second copy, and it is cheaper than a
+table that lies.

@@ -51,9 +51,21 @@ restart. Those behaviours are now verifiable only by creating real containers.
 The concern was raised before the change and the decision reaffirmed, so it is a
 known cost rather than an oversight.
 
-**Five RFDs were removed**: 0005, 0006, 0009, 0012, 0020. They described a Uro
-decomposition, a zone-baker, a cold storage tier, an actor-based search index,
-and cross-actor transactions. Each contained real analysis. None had a consumer.
+**Five RFDs were removed** in `8788100`: 0005 (decomposing Uro into actors),
+0006 (zone-baker), 0009 (cold storage tier), 0012 (actor-based indexing and
+search), and 0020 (cross-actor transactions). Each contained real analysis. None
+had a consumer. They are recoverable from git history.
+
+**An index of the RFDs was removed** for the same reason, one step removed:
+`rfd/README.md` restated every RFD's number, title, and status, all of which
+already live in the files. It desynchronised three times, and each fix was
+manual. A directory listing is generated; a hand-maintained table of the same
+information is duplicate state that drifts silently, because nothing fails when
+it is wrong.
+
+The rule that catches this is the one in
+[RFD 0015](0015-tooling-constraints.md): "it costs nothing" is not a reason to
+keep something.
 
 **Open questions went from 56 to 16**, and of those 16, 13 are tasks rather than
 questions. Most of what looked like a design backlog was confident answers to
@@ -84,3 +96,9 @@ it records the shape to restore if a second production substrate appears.
 
 The distinction is between *keeping an analysis* and *maintaining a backlog*.
 The first is cheap. The second implies the questions are live.
+
+[RFD 0001](0001-substrate-port.md) is the worked example: superseded by
+[0016](0016-collapse-the-substrate-port.md) and kept, because a specific
+condition would revive it. A second production substrate brings the port back,
+and the shape to restore is written down. The five removed RFDs had no such
+trigger.
