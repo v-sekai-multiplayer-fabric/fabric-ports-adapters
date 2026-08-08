@@ -108,6 +108,42 @@ already true of most social graphs. It is only unacceptable where the relation
 gates something safety-critical, which should be identified explicitly rather
 than assumed absent.
 
+## Authorisation is not a cross-entity query
+
+An earlier draft treated access control as a hard case of the above. For the
+common case it is not, and the reason is worth stating because it changes the
+cost of everything built on it.
+
+Two different things get called "the graph":
+
+| | Nature | Where it lives |
+|---|---|---|
+| **Rules** — role hierarchies, `IS_MEMBER_OF`, `CONTROLS`, `DELEGATED_TO` | immutable, ships with the app | resident in every actor |
+| **Relations** — friendships, ownership, membership | mutable, per-entity | the actor the relation describes |
+
+Immutable shared *config* is not shared *state*, so keeping the rule set resident
+everywhere raises no ownership question. Only the relations need an owner, and
+the owner is obvious: the actor the relation is about.
+
+The authorisation question in an actor system is therefore never "walk a global
+graph". It is:
+
+> May this subject do X to **me**?
+
+One resource, answered by the actor that owns it, from edges it already holds
+plus rules it already has in memory. A local read and a bounded scan, with no
+fan-out. Genuinely transitive cases still walk, and Uro's adapter already bounds
+that at `@fuel 8`.
+
+The alternatives are worth naming as rejected, because both look reasonable:
+
+- **Fetch edges per check and assemble a graph.** Storage stays actor-shaped but
+  evaluation reconstitutes a global view, so every check pays a fan-out.
+- **Hold one resident graph of everything.** Fastest per check and not
+  actor-based at all: a single mutable structure describing every entity is the
+  shared state actors exist to remove, and a linear-scanned list does not survive
+  millions of user edges.
+
 ## Open questions
 
 - [ ] Hot-tag threshold and resharding procedure.

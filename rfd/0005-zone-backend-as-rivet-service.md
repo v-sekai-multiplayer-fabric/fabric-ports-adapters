@@ -102,8 +102,20 @@ to be redesigned to move. Uro also already has `lib/uro/ports/planner.ex`, so
 the ports-and-adapters shape is established in that codebase rather than
 imposed by this one.
 
-The open question is where the graph lives once users are actors: rebuilt per
-request from the relevant actors, or held by a authorisation actor.
+**Decided: rules stay bundled and resident; relations live in the actor they
+describe.** Uro's adapter already assumes the first half, describing ReBAC
+graphs as "trusted, bundled domain content, not adversarial input", and
+implementing the graph as a plain list scanned linearly with recursion bounded
+at `@fuel 8`. That is only viable for a small rule set, which is exactly what
+bundled rules are.
+
+Friendships and ownership are therefore not edges in that graph. They are held
+by the user and content actors that own them, and a check is a local read plus a
+bounded scan rather than a fan-out. See
+[RFD 0012](0012-actor-indexing-and-search.md).
+
+This makes per-request authorisation cheap, which matters for the posture
+question below.
 
 ## What this costs
 
@@ -141,7 +153,13 @@ should be checked rather than assumed.
 - [ ] What is the hot-tag threshold, and what is the resharding procedure?
 - [ ] Is unranked, deterministically ordered search acceptable, or is relevance
       ranking required?
-- [ ] Where does the ReBAC graph live once users are actors?
+- [ ] **Is per-request authorisation the target posture?** Re-running
+      `check_rel` per action is nearly free given the above. The expensive half
+      is per-request *authentication*: RivetKit establishes identity in
+      `onBeforeConnect` and carries it in `createConnState`, so re-authorising
+      against a cached subject still leaves an implicit trust zone. Removing it
+      means presenting a credential per action, which changes the client
+      protocol. Worth deciding the two halves separately.
 - [ ] Zone registration currently happens at zone startup against a live Uro. If
       the registry is an actor that sleeps, a registration must wake it; confirm
       that wake-on-message is acceptable on that path.
