@@ -44,12 +44,17 @@ them, on the cluster itself.
 
 ## S3 endpoint
 
-[versitygw](https://github.com/versity/versitygw) is the proposed gateway,
-carried over from the original issue. It can be run as a quadlet alongside the
-FoundationDB nodes, on the same substrate as everything else
-([RFD 0001](0001-substrate-port.md)).
+The target must be **off-host** and S3-compatible. Beyond that the shape is
+deliberately open: a managed provider and
+[versitygw](https://github.com/versity/versitygw) on a separate machine are
+interchangeable from `fdbbackup`'s point of view, because versitygw encapsulates
+whatever is behind it and presents S3 either way.
 
-A cold tier could reuse the same deployment, but sizing and durability should be
+Running versitygw beside the FoundationDB nodes is useful for proving the
+mechanism, including a verified restore, but it is not a backup: it does not
+survive losing that machine.
+
+A cold tier could reuse the same endpoint, but sizing and durability should be
 decided per use rather than shared by default, given the profile difference
 above.
 
@@ -73,4 +78,11 @@ above.
       for local quadlet testing: the backup target is deliberately *not* part of
       the same set of units, so a purely local bring-up cannot demonstrate the
       real configuration, only the mechanism.
-- [ ] Which off-host target, and where do its credentials live?
+- [x] **The exact target is deliberately unspecified.** The requirement is an
+      off-host S3-compatible endpoint. Whether that is a managed provider or
+      versitygw on a separate machine is an operational choice, not an
+      architectural one, because versitygw encapsulates its backing store behind
+      the S3 interface either way. `fdbbackup` sees the same `blobstore://` URL
+      regardless.
+- [ ] Where do the blobstore credentials live? They cannot be in the repo, and
+      the quadlet units need them at start.
