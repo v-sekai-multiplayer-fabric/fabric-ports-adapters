@@ -116,6 +116,14 @@ Geometric authority removes the question rather than answering it. There is no
 authority to verify against, because the answer is computable by anyone and
 forgeable by no one.
 
+### Superseded by RFD 0018
+
+The analysis below is kept for continuity, but
+[RFD 0018](0018-authority-and-the-trusted-substrate.md) revises it: identity
+forgery is closed by Pegboard rather than by the proofs, the range map belongs
+in actor state as control-plane data, and the corpus establishes
+coordination-freedom rather than unforgeability.
+
 ### What is not proven
 
 `geometric_authority_unique` takes `DisjointRanges view.ranges` as a hypothesis,
