@@ -29,7 +29,8 @@ Bundling them made the whole thing look like a large project. Backup is not.
 
 ## Decision
 
-Use FoundationDB's native backup. `fdbbackup` is already present in the
+Continuous backup to an off-host S3-compatible target, using FoundationDB's
+native backup. `fdbbackup` is already present in the
 `foundationdb/foundationdb:7.3.76` image and accepts a blobstore URL directly:
 
 ```
@@ -58,14 +59,18 @@ above.
 - [ ] Configure `fdbbackup` against it.
 - [ ] **Verify a restore, not just a backup.** An unverified backup is not a
       backup, and `fdbrestore` is in the same image.
-- [ ] Decide continuous (`fdbbackup start`) versus scheduled.
+- [x] **Decided: continuous** (`fdbbackup start`), targeting near-zero data
+      loss. Costs a permanently running backup agent and steady write traffic to
+      the S3 endpoint.
 - [ ] Decide retention.
 - [ ] Decide where the blobstore credentials live, given they cannot go in the
       repo.
 
 ## Open questions
 
-- [ ] Does the backup target live on the same host as the cluster? If so it does
-      not protect against host loss, which is most of the point.
-- [ ] What is the acceptable recovery point objective? That decides continuous
-      versus scheduled more than anything else.
+- [x] **Decided: off-host.** A target on the same machine as the cluster does
+      not survive losing that machine, which is most of the point. Consequence
+      for local quadlet testing: the backup target is deliberately *not* part of
+      the same set of units, so a purely local bring-up cannot demonstrate the
+      real configuration, only the mechanism.
+- [ ] Which off-host target, and where do its credentials live?

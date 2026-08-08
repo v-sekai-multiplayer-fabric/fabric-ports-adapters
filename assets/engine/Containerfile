@@ -3,7 +3,8 @@
 # Rivet Engine built against FoundationDB.
 #
 # The FoundationDB backend is not in upstream Rivet. It lives on a branch of the
-# fork, cloned here at a pinned commit. Bump RIVET_REF to move.
+# fork, cloned here at a pinned commit. Bump RIVET_REF to move. The backend is
+# that fork's default feature, so this build does not select it explicitly.
 #
 # libfdb_c.so is a hard runtime dependency of the foundationdb feature, and its
 # version must stay protocol-compatible with the fdbserver nodes. Both come from
@@ -37,7 +38,7 @@ RUN git init -q . \
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/build/target \
-    cargo build --release -p rivet-engine --bin rivet-engine --features foundationdb \
+    cargo build --release -p rivet-engine --bin rivet-engine \
     && cp target/release/rivet-engine /rivet-engine
 
 FROM docker.io/library/debian:bookworm-slim

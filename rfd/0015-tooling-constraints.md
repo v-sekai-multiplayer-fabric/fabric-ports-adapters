@@ -66,6 +66,22 @@ retry, not a sleep, not a fixed seed.
 Verified by running the suite across eight randomised seeds with zero failures.
 Pinning the seed would have hidden it; retrying would have hidden it more.
 
+## Applying this to configuration, not just code
+
+The same rule catches redundant configuration, and it is easier to miss there
+because the usual defence is that it "costs nothing".
+
+When `foundationdb` became the fork's default feature, the explicit
+`--features foundationdb` in `assets/engine/Containerfile` became redundant. The
+argument for keeping it was that it documents the requirement where someone
+would look when a build breaks. That is the same argument YAGNI rejects
+everywhere else: it is duplicate state that can drift from the default, a second
+place to update, and it reads as load-bearing when it is not. Removed, with a
+comment stating that the fork selects the backend by default.
+
+"It costs nothing" is not a reason to keep something. Nothing that is retained
+costs nothing.
+
 ## Consequences
 
 The suite is fast enough to run on every change and honest enough to be trusted
