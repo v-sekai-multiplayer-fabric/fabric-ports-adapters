@@ -129,6 +129,111 @@ postgres drivers", and `error_is_transaction_too_large` returns a hardcoded
 `false` outside FoundationDB. Retry classification therefore differs by backend
 even where the happy path does not.
 
+## Documented semantics to build on
+
+Gathered from `website/src/content/docs/actors/`, so these are the platform's
+own statements rather than inference. Anything inferred is marked as such.
+
+### Identity
+
+> Keys are unique within each actor name. — `keys.mdx`
+
+Combined with Pegboard exclusivity, a key resolves to at most one live writer.
+This is what closes identity forgery, and it is stated rather than assumed.
+
+### State persistence
+
+From `state.mdx`:
+
+> `state` lives in memory and is persisted automatically, so reads and writes
+> have no added latency while the data still survives sleeps, restarts,
+> upgrades, and crashes.
+
+> Reads never trigger a save, saves aren't tied to action or handler boundaries,
+> and state is also flushed when the actor sleeps or shuts down.
+
+Two consequences worth designing around:
+
+- Saves are **not** tied to action boundaries, so an action returning is not a
+  durability point. Anything requiring a durability barrier must ask for one.
+- `vars` is never saved. It exists only while the actor runs.
+
+### Sleep and wake
+
+From `lifecycle.mdx`:
+
+> Actors automatically sleep after a period of inactivity to free up resources.
+> When a request arrives for a sleeping actor, it wakes up, restores its state,
+> and handles the request.
+
+> The actor may go to sleep at any time during the `run` handler.
+
+> State mutations made during `onSleep` are persisted before the actor finishes
+> sleeping.
+
+`keepAwake(promise)` blocks idle sleep until the promise settles. Sleep is
+therefore not a failure mode to defend against; it is the normal resting state,
+and long work must hold the actor up explicitly.
+
+### Queues
+
+> **Durable**: messages are persisted and survive actor sleep/restart. —
+> `queues.mdx`
+
+So a queue is a durability barrier where plain state is not. It is also a
+deadlock hazard: a `wait: true` message an actor sends to itself is documented
+as "a guaranteed deadlock because the run loop is already busy".
+
+### Limits that shape the design
+
+From `limits.mdx`:
+
+| Limit | Value |
+|---|---|
+| Max KV value | 128 KiB |
+| Max KV key | 2 KiB |
+| Max keys per operation | 128 |
+| Max incoming message | 64 KiB soft, 32 MiB hard |
+| Max outgoing message | 1 MiB soft, 32 MiB hard |
+| Max request/response body | 20 MiB |
+| Buffered per connection while asleep | 128 MiB, 65,535 messages |
+
+### Timeouts, which bound every liveness assumption
+
+| Timeout | Value |
+|---|---|
+| WebSocket open, including `onBeforeConnect` and `createConnState` | 15s |
+| Message ack | 30s |
+| Connection ping | 30s |
+| Hibernation wake | 90s |
+| `onRequest` handler | 60s, from `actionTimeout` |
+
+The 15s figure bounds how expensive connect-time authorisation may be, which is
+the budget the posture question in
+[RFD 0005](0005-zone-backend-as-rivet-service.md) has to fit inside.
+
+## Actors do not operate without the engine
+
+**This is inferred, not documented, and the distinction matters.**
+
+There is no documentation of engine unavailability. Searching the docs for
+`unavailable`, `unreachable`, `offline`, `network partition`, and `split-brain`
+returns nothing. No page describes a degraded or disconnected mode.
+
+The timeout table implies the answer: every liveness timeout is short and
+engine-mediated. A partition lasting more than about 30 seconds closes
+connections by ack or ping timeout, and a sleeping actor that cannot be woken
+inside 90 seconds disconnects its client.
+
+So the working assumption is that a zone which cannot reach the engine has
+already lost its connections, and there is no supported mode in which it
+continues serving.
+
+**Undocumented is not the same as unsupported**, and this should be confirmed
+rather than relied on. If it holds, it settles the open question below: there is
+no availability argument for gossiping the range map, because nothing survives
+the outage the gossip would be protecting against.
+
 ## Consequences
 
 - The range map is actor state. `receive_preserves_disjoint` becomes
@@ -142,9 +247,13 @@ even where the happy path does not.
 
 ## Open questions
 
-- [ ] Does anything require a range map when the engine is unreachable? That is
-      the only argument for gossiping control-plane data, and it should be made
-      explicitly rather than assumed.
+- [ ] Confirm that actors have no disconnected mode. The conclusion above is
+      drawn from silence plus the timeout table, not from a positive statement,
+      and it is load-bearing for keeping the range map in actor state.
+- [ ] Does a max-size Rivet value fit FoundationDB? Rivet documents a 128 KiB
+      KV value ceiling; FoundationDB's value limit is 100 KB, which is smaller.
+      Depot presumably chunks, but the interaction should be verified rather
+      than assumed. Relates to [RFD 0008](0008-hot-tier-foundationdb.md).
 - [ ] Should `promoteToAuthority` check geometric containment as well as
       capacity?
 - [ ] Are the two vacuous theorems in `ReBAC.lean` intended to be proved, or are
