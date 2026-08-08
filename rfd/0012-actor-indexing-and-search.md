@@ -78,15 +78,64 @@ that tag in its own SQLite.
 An inverted index is one of the more natural things to shard across actors,
 because the shard key falls out of the query.
 
+### Relevance ranking is already distributed
+
+**Decided: relevance ranking is required, and distributed across actors with no
+central statistics holder.** That is achievable, because the quantity ranking
+needs is per-term and the index is already sharded by term.
+
+Document frequency for a term is the length of that term's posting list. A tag
+actor therefore *is* the authority on its own `df`, and nothing has to aggregate
+anything:
+
+```
+tag:forest   → posting list, df = |posting list|
+tag:ruins    → posting list, df = |posting list|
+caller       → intersect, score each doc by summing per-term weights
+```
+
+Each tag actor returns its posting list and its own `df`. The caller intersects
+and scores. That is the whole mechanism.
+
+#### Why the corpus size N is not needed
+
+The usual objection is that IDF needs the total document count, which is global.
+For the common case it cancels:
+
+```
+idf(t) = log(N / df(t)) = log N − log df(t)
+```
+
+A document matching *k* query terms scores `k·log N − Σ log df(t)`. For an **AND**
+query every returned document matches all *k* terms, so `k·log N` is a constant
+added to every score and does not change the ordering. Ranking by `−Σ log df(t)`
+gives exactly the IDF ordering, using only per-actor values.
+
+`N` re-enters only when *k* varies between documents, which means OR queries and
+partial matches. Even then it sits inside a logarithm, so an approximate count
+is sufficient and it never needs to be exact or current.
+
+So the shared state the term-sharded design was built to avoid is not required
+after all, and the exception is bounded and weak.
+
+#### What this does cost
+
+- The caller does the scoring, so it holds all matched posting lists at once.
+  That is the same memory the intersection already needs.
+- `df` is only meaningful relative to the same corpus. A tag actor that has been
+  resharded reports the `df` of its shard, not of the term, so second-level
+  sharding must sum `df` across shards or ranking silently skews toward
+  heavily-sharded tags. Worth designing in when the threshold is set rather
+  than discovering later.
+
 ### Where it breaks
 
 - **Hot tags.** A tag on very many entities puts a large posting list behind one
   single-writer actor. Needs second-level sharding, `tag:forest:0..n`, with a
   threshold and a resharding procedure. Both are real work and should be chosen
   before they are needed.
-- **Ranking.** Relevance needs corpus-wide document frequency, which no single
-  actor holds. Either accept a deterministic unranked order, or keep approximate
-  global statistics in a small projection actor and accept lag.
+- **Ranking.** Addressed below. An earlier draft said relevance needs a
+  projection actor holding corpus-wide statistics. That was wrong.
 - **Free text, not tags.** All of the above works because tags are discrete
   terms matched exactly. Prefix, fuzzy, and natural-language search are
   different problems, and SQLite FTS5 inside one actor does not generalise to a
