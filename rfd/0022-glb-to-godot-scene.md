@@ -118,47 +118,84 @@ bidirectional stream is reliable and ordered, exactly like a WebSocket, so
 moving the asset path onto one is a port rather than a demonstration. The bar is
 higher: **the demo must be something WebSocket cannot do at all.**
 
-Two candidates, and only one survives the test.
+**Independent streams alone do not clear it.** The obvious pitch is a bulk
+upload on one stream and control messages on another with no head-of-line
+blocking between them. A client can open two WebSockets, get two TCP
+connections, and obtain that same isolation. Cheaper is not impossible.
 
-**Independent streams. Rejected.** The obvious pitch is uploading a 100 MB glb
-on one stream while control messages flow on another, with no head-of-line
-blocking between them. But a client can open two WebSockets, get two TCP
-connections, and obtain the same isolation. WebTransport is cheaper here, one
-handshake and one congestion controller instead of two, and cheaper is not
-impossible. This fails the bar.
+But that objection only holds while the two flows are considered in isolation.
+Put them on **one bottleneck link** and it collapses, which is the demo below.
 
-**Unreliable datagrams. The real answer.** WebSocket has no unreliable mode.
-None. There is no flag, no option, no workaround, because it is defined over a
-reliable ordered byte stream.
+### The real problem: moving while content loads
 
-That gap is the entire social VR problem. At a 15.6 ms tick a pose that arrives
-late is not merely useless, it is worse than nothing, because the next tick has
-already superseded it. TCP cannot know that. It retransmits the stale pose,
-and it holds every fresher pose behind it until the retransmission lands. Loss
-becomes latency for the whole stream, and the avatar visibly stalls rather than
-degrades.
+A player is standing in a zone when new content arrives. They keep walking
+around while a 100 MB asset streams in. If their movement stalls until the
+asset lands, the experience is broken, and this is the ordinary case in social
+VR rather than an edge case.
 
-Datagrams invert it. A lost pose is simply gone, the next one is already on the
-way, and nothing behind it waits. **Discarding late data is the feature**, and it
-is the one thing only WebTransport offers.
+Two actors, each doing real work already built:
 
-### The demo
+- **Zone A**, the asset zone, converting and streaming a 100 MB glb. This is
+  the path the rest of this RFD documents, measured at 43 MB in 17 s.
+- **Zone B**, the live zone, serving pose and scene state at 64 Hz.
 
-Avatars in a zone, poses at 64 Hz as WebTransport datagrams, authoritative
-state broadcast back the same way. Run the identical scenario over WebSocket.
-Impair the link with `tc netem` at 2% loss and 50 ms RTT, which is an ordinary
-mobile network rather than a pathological one.
+**Force the contention.** Cap the bottleneck with `tc netem` so the bulk
+transfer saturates it, and add 2% loss with 50 ms RTT. Then measure Zone B's
+round-trip latency during Zone A's transfer.
+`container-runner/examples/e2e-test/load-test.mjs` already reports `p50`, `p95`,
+`p99`, and `max`, so the harness exists.
 
-Measure p95 and p99 of pose-to-render latency against the 15.6 ms tick.
+### Why two WebSockets do not save the baseline
 
-The expected result is that WebSocket p99 climbs to multiples of RTT under loss
-while WebTransport stays flat and simply drops poses. If both stay flat, the
-demo has disproved its own premise and is still worth having, because
-`rfd/0023` chose the transport on this reasoning.
+This is the part that overturns the rejection above. Two TCP connections are
+independent at the transport layer and **not** independent on the wire. They
+share the bottleneck queue. A bulk TCP transfer fills that queue, and every
+pose packet then waits behind bulk bytes that TCP has no reason to consider
+less urgent. The stall moves from the transport into the network path.
 
-Asset conversion stays on TCP, where a 100 MB upload genuinely wants
-reliability and ordering. It is what puts content in the zone, not the thing
-being demonstrated.
+Nothing in the application can fix it. TCP offers no way to say "this
+connection yields to that one", because prioritisation across two independent
+connections is not a thing the kernel or the network can express.
+
+One QUIC connection can express exactly that. Two streams, one congestion
+controller, and a sender that knows the pose stream outranks the bulk stream.
+Add datagrams for pose and the stale ones are dropped rather than queued at
+all.
+
+**That is the WebSocket-impossible claim, stated so it can fail:** on a shared
+bottleneck, WebTransport holds Zone B's p99 near the 15.6 ms tick while Zone A
+saturates the link, and two WebSockets cannot, at any connection count.
+
+### One constraint this design has to respect
+
+A WebTransport session is established by a single CONNECT to a single URL, and
+`RequestContext` routes on hostname plus path. Streams inside a session carry
+no path of their own. So one session resolves to **one** actor unless the first
+bytes of each stream name their target, which is application-level demultiplexing
+that does not exist yet.
+
+This matters because the cross-actor prioritisation above needs both zones on
+one connection. Two sessions would restore two congestion controllers and give
+back the advantage being measured. The stream header is therefore not optional
+framing, it is the mechanism, and it is the same demultiplexing the tunnel
+needs in step 2 below.
+
+### What the demo measures
+
+| | WebSocket, two connections | WebTransport, one session |
+|---|---|---|
+| Zone A bulk transfer | saturates bottleneck | saturates bottleneck |
+| Zone B p99 during transfer | expected to climb with queue depth | expected flat near tick |
+| Cross-flow priority | not expressible | stream priority, or datagrams |
+| Stale pose on loss | retransmitted, blocks fresher | dropped, next tick supersedes |
+
+Asset conversion stays on a reliable stream, where a 100 MB upload genuinely
+wants ordering. It is the load being generated, not the thing being proved.
+
+If Zone B's p99 stays flat on both, the demo has disproved its own premise. That
+is still worth knowing, because `rfd/0023` chose this transport on exactly this
+reasoning, and the cost of the tunnel work below is only justified if the gap is
+real.
 
 ### What blocks it
 
@@ -174,7 +211,8 @@ So the work is, in order:
 
 1. Steps 5 and 6 below. Nothing reaches an actor over QUIC until the listener is
    bound and routed, whatever the payload.
-2. A datagram frame in the tunnel, and a lossy path for it. This is the
+2. Stream demultiplexing, so one session reaches both zones, and a datagram
+   frame in the tunnel with a lossy path for it. This is the
    substantial piece and the one `h3_server.rs` calls "a separate change".
    Reliable delivery over `universalpubsub` would defeat the purpose, so the
    tunnel has to be allowed to drop.
