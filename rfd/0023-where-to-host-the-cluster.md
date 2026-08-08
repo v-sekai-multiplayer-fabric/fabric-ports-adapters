@@ -122,12 +122,45 @@ machine is **below** FoundationDB's 4 GB recommendation, and 2 GB is exactly
 what the Fly deployment ran while `status` complained. Leaves nothing for a
 Godot zone doing a 100 MB conversion, so zones would need their own machines.
 
-### D. Fly.io — the configuration already built
+### D. Fly.io — the configuration already built, ~$51/month
 
-`fdb-up` and `engine-up` target it, and it was verified working. Per-machine
-plus per-volume billing, and the earlier deployment was 5 machines and 30 GB of
-volumes. Convenient rather than cheap, and the tooling now targets quadlets
-instead ([RFD 0016](0016-collapse-the-substrate-port.md)).
+The only option whose sizing is not a guess, because it is checked in.
+`self-host/fly/*/fly.toml` specifies `shared-cpu-2x` at `2gb` for all three
+apps, and `foundationdb/fly.toml` provisions `initial_size = "10gb"` per node.
+
+Fly states the rule as "the price of a named CPU/RAM preset, plus about $5 per
+30 days per GB of additional RAM". Backing the CPU share out of the published
+`shared-cpu-1x` 256 MB price of $2.02 gives ~$0.77 of CPU, so `shared-cpu-2x`
+at 2 GB is ~$1.54 + $10.00 = **~$11.54/machine**.
+
+| Item | From | Monthly |
+|---|---|---|
+| 3 × FoundationDB, `shared-cpu-2x` 2 GB | `foundationdb/fly.toml` | $34.62 |
+| 1 × engine, `min_machines_running = 1` | `engine/fly.toml` | $11.54 |
+| Zone, `min_machines_running = 0`, `auto_stop = "suspend"` | `godot-zone/fly.toml` | ~$0 idle |
+| 3 × 10 GB volumes at $0.15/GB | `initial_size` | $4.50 |
+| **Always-on total** | | **~$50.66** |
+
+Egress is extra at $0.02/GB in North America and Europe.
+
+**The zone line is the interesting one.** It is configured to scale to zero and
+suspend, so conversion capacity costs nothing until someone uploads a glb. On a
+rented box that capacity is paid for whether or not it is used. This is the one
+place where the pricing model matches the actor model rather than fighting it,
+and it is why Fly is not simply "convenient rather than cheap".
+
+The rest is expensive: ~$51 buys 8 GB across four machines, which is roughly
+what one AX41 costs with 64 GB.
+
+**On the free allowance.** The legacy Hobby allowance is three `shared-cpu-1x`
+**256 MB** VMs plus 3 GB of volume. FoundationDB will not run in 256 MB, so the
+allowance cannot host this cluster. It offsets the bill rather than covering it.
+
+Fly's current docs say plainly that "current customers use pay-as-you-go pricing
+with no included monthly credits", and no $15/month credit appears in any
+published plan. If the account does carry one, it is account-specific and worth
+confirming against an actual invoice rather than the rate card. At $15/month it
+would put Fly at **~$36/month net**, which does not change the ordering below.
 
 ### E. DigitalOcean — existing account, ~3x the price
 
@@ -136,7 +169,46 @@ Three 8 GiB droplets at roughly $162/month against ~€49 for a dedicated box wi
 and Spaces for backups in the same place.
 
 Defensible if the time cost of onboarding a new vendor is worth more than
-~$110/month, which for a small team it may well be.
+~$110/month, which for a small team it may well be. Note that it is also the
+most expensive of the three accounts already held, by roughly 3x.
+
+### F. Google Compute Engine — existing account, ~$52/month
+
+Priced against the same shape as option D, so the two are comparable.
+`e2-small` is 2 shared vCPU and 2 GB, matching `shared-cpu-2x` at `2gb`
+closely enough.
+
+| Item | Rate | Monthly |
+|---|---|---|
+| 3 × `e2-small` FoundationDB | $12.23 | $36.69 |
+| 1 × `e2-small` engine | $12.23 | $12.23 |
+| 30 GB `pd-balanced` | $0.10/GiB | $3.00 |
+| **On-demand total** | | **~$51.92** |
+
+That lands within a dollar of Fly, which is a coincidence worth noticing: two
+very different billing models converge because both are really charging ~$5–6
+per GB of RAM per month.
+
+**Two Google-specific levers, one useful and one not.**
+
+A one-year committed use discount takes `e2-medium` from $24.46 to $15.41, a
+37% cut. Applied here that is roughly **$34/month**, the cheapest of any managed
+option. But it commits a year to a stack that has not yet run end to end
+([RFD 0017](0017-engine-bring-up.md)). Committing before the engine image builds
+is buying certainty about the wrong variable.
+
+Spot pricing is steeper still, `e2-medium` at $0.0201/hour against $0.0335. Spot
+is disqualifying for FoundationDB nodes, which is precisely where the money is.
+It would suit zones, which are already designed to be interruptible.
+
+**What Google does not have is Fly's zero.** The always-free tier is one
+`e2-micro` at 1 GB plus 30 GB of standard disk, which offsets roughly $6/month
+and cannot host a FoundationDB node. On plain Compute Engine a zone VM bills
+whether or not anyone is converting anything. Getting scale-to-zero means Cloud
+Run, and the zone actor is a stateful container holding a SceneTree, which is
+not what Cloud Run is for. This is the same point as option D from the other
+side: the pricing model either matches the actor lifecycle or it does not.
+
 
 ## Recommendation
 
@@ -159,9 +231,24 @@ Option B is the better production answer and is cheaper, which is unusual enough
 to double-check before relying on it. Move when the fault tolerance is worth
 having, and benchmark FoundationDB on Contabo first.
 
-DigitalOcean is the answer if a new vendor is not wanted, at roughly three times
-the price. That is a legitimate trade rather than a mistake, and it should be
-made deliberately rather than by default.
+**If no new vendor is wanted, the answer is Fly, not DigitalOcean.** Now that
+all three existing accounts are priced against the same shape, they separate
+cleanly:
+
+| Existing account | Monthly | Config written? | Zone scales to zero? |
+|---|---|---|---|
+| Fly.io | ~$51 | yes, and it ran | yes |
+| Google Compute | ~$52 (~$34 committed) | no | no |
+| DigitalOcean | ~$162 | no | no |
+
+Fly and Google cost the same to within a dollar, so the tiebreaks are that Fly's
+deployment already exists and has been executed, and that its zone bills nothing
+while idle. Google's committed-use discount is the cheaper number, but it buys a
+year of certainty about a stack that has not run yet.
+
+DigitalOcean is 3x either of them for compute and should be used for Spaces
+only. Its earlier framing here as the incumbent-account option was wrong: it is
+the most expensive account already held, not the convenient one.
 
 ## What this does not account for
 
@@ -171,16 +258,16 @@ made deliberately rather than by default.
 - **Bandwidth.** A 100 MB conversion moves ~230 MB across the wire in base64.
   Contabo advertises 32 TB; the others are not compared here.
 - **Prices move.** Hetzner changed three times in 2026. This is a snapshot.
-- **Nothing has been deployed to any of these**, including the Fly configuration
-  that once worked, since it was destroyed.
+- **Nothing is deployed to any of these right now.** The Fly cluster did run
+  and was verified, then was destroyed to stop billing. Its configuration is
+  still checked in and is the only sizing here that is not an estimate.
 
 ## Open questions
 
 - [ ] Does FoundationDB perform acceptably on Contabo, given the variability
       reports? That decides whether option B is real.
-- [ ] Is there unused credit on any of the existing accounts? That could
-      reverse the pricing entirely and is not visible from published rates.
-- [ ] What does Google Compute cost for this shape? Not surveyed, and the
-      account exists.
+- [ ] Does the Fly account carry a monthly credit? Published plans show none,
+      and the legacy allowance is too small to run FoundationDB. An invoice
+      settles it; the rate card does not.
 - [ ] Do zones need their own machines, or do they share with FoundationDB? A
       100 MB conversion next to a database is contention worth measuring.
