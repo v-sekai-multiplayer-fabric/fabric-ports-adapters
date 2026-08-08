@@ -44,13 +44,47 @@ link against OpenUSD directly. This is the **archival** side, and it is in the
 same language as this repo.
 
 **[fabric-flow-adapters](https://github.com/v-sekai-multiplayer-fabric/fabric-flow-adapters)**
-— IDTX Flow, a Godot C++ GDExtension that converts a USD stage into a Godot
-scene tree (`UsdStageNode3D`, `UsdMeshInstanceNode3D`, `UsdSkeletonNode3D`).
-This is the **transmission** side for `.tscn`.
+— far more than an importer, and itself structured as ports and adapters:
+`flow/core`, `flow/ports`, and `flow/adapters/{cli,godot,unity}`.
+
+An earlier draft of this RFD said the export direction "has no named
+implementation". **That was wrong.** `flow/core` already exports:
+
+```
+idtx_core_export_avatar_to_usd / _ex
+idtx_core_export_avatar_to_scn / _buffer
+idtx_core_export_avatar_to_vrm
+idtx_usd_export_opts_t / idtx_usd_export_opts_init
+```
+
+and the `cli` adapter, `idtxcli`, surfaces most of it headlessly:
+
+```
+usd-to-vrm <in.usda> <out.vrm>
+vrm-to-usd <in.vrm>  <out.usda>
+usd-to-usd <in.usda> <out.usda>   (round-trip)
+vrm-to-vrm <in.vrm>  <out.vrm>    (round-trip)
+usd-export <in.usda> <out.usda> --mode <flat|overlay|layer-only|flatten> [--source <src.usda>]
+reconstruct-quads <in.usda> <out.usda> [planarity_deg]
+bake   <in.bin>    --aria <url> [--auth TOKEN]
+fetch  <caibx-url> --output <out.bin> [--aria <url>] [--auth TOKEN]
+verify <caibx-url> [--aria <url>] [--auth TOKEN]
+```
 
 **[fabric-flow-adapters-project](https://github.com/v-sekai-multiplayer-fabric/fabric-flow-adapters-project)**
 — a Godot project exercising the plugin, carrying `.usda` fixtures such as
 `blendshape_test.usda` and `dome.usda`. Useful as a conformance corpus.
+
+### "bake" means chunk-and-upload, not convert
+
+Worth pinning down, because this RFD had the term wrong. In `idtxcli`, `bake`
+takes a `.bin` and uploads it to aria storage, returning a casync index
+(`.caibx`); `fetch` and `verify` are its inverse and its check. Conversion is a
+separate set of verbs.
+
+So "zone-baker" names the CDN step, and the conversion step is adjacent to it
+rather than the same thing. A service doing both is still reasonable, but the
+two should not be conflated in its interface.
 
 Both trace back to
 [idtx-flow](https://github.com/Immersive-Data-Center-Management/idtx-flow).
@@ -128,13 +162,16 @@ The queue does not.
 
 ## Open questions
 
-- [ ] **Who owns ingest?** `fabric-stage-runtime` supplies OpenUSD to Elixir,
-      which covers writing USD stages, but "any → USD" still needs per-format
-      readers. OpenUSD's own plugin set covers some; the rest is unspecified.
-- [ ] **Who owns `.vrm` and `.glb`?** Either runtime could, per the note above.
-- [ ] **What implements `.tscn` → USD?** Confirmed required, and
-      `fabric-flow-adapters` does not do it. This is the largest unresourced
-      piece.
+- [ ] **What is `any` on the ingest side, beyond VRM?** `idtxcli` reads `.vrm`
+      and `.usda`. Other source formats are unaccounted for.
+- [ ] **Where does `.glb` come from?** It is named as a transmission format but
+      appears in neither the CLI verbs nor the core export symbols.
+- [ ] **Does `idtxcli` need a scene verb**, so the whole pipeline can run
+      headless without a Godot runtime? `flow/core` already has
+      `idtx_core_export_avatar_to_scn`; only the CLI surface is missing.
+- [ ] **Is the conversion surface avatar-shaped only?** Every core export symbol
+      is `export_avatar_to_*`. Whether non-avatar assets (maps, props) go through
+      the same path is unclear from the API names.
 - [ ] **What carries the provenance stamp** through casync-aria-storage, so a
       published artifact is still recognisable as derived when it comes back?
 - [ ] **Does repair get its own actor key?** A repair produces a new master from
@@ -227,20 +264,26 @@ Consequences worth stating:
   and bounded by the target format. Loss on ingest is permanent, because the
   archive is the last copy of that structure.
 
-## The baker is probably two runtimes, not one
+## Only the Godot scene format needs Godot
 
-An earlier draft assumed the baker had to be a headless Godot process, because
-IDTX Flow is a Godot plugin. `fabric-stage-runtime` makes that only half true.
+Two earlier drafts got this wrong in opposite directions: first that the baker
+must be a headless Godot process, then that it splits evenly between Elixir and
+Godot. With `idtxcli` in view, the split is narrower.
 
-**Archival operations do not need Godot.** Reading, writing, and composing USD
-stages is OpenUSD's job, and `fabric-stage-runtime` makes that linkable from
-Elixir. Ingest (`any` → USD) and any pure-USD manipulation can run in the same
-BEAM process as the service itself.
+**USD, VRM, and the CDN operations need no Godot and no Elixir bindings.**
+`idtxcli` does them headlessly as a child process, which is exactly what
+`container-runner` hosts.
 
-**`.tscn` output does need Godot**, because a Godot scene is defined by Godot's
-own serialisation and IDTX Flow runs inside the engine. That path inherits the
-constraint from [RFD 0004](0004-image-provenance.md): the runtime must be the
-fork's double-precision build, not an upstream release.
+**Only `.scn` / `.tscn` needs Godot**, and only because a Godot scene is defined
+by Godot's own serialisation. `flow/core` has `idtx_core_export_avatar_to_scn`,
+but the `cli` adapter does not expose a scene verb; that path runs through
+`flow/adapters/godot`. It inherits the constraint from
+[RFD 0011](0011-godot-runtime-provenance.md): the runtime must be the fork's
+double-precision build.
+
+`fabric-stage-runtime` remains useful where the service itself needs to inspect
+or compose USD in-process rather than shelling out, but it is not required for
+conversion.
 
 `assets/godot_zone/` already builds a headless Godot image with
 `container-runner` as its entrypoint and an addon copied into
@@ -252,6 +295,17 @@ OpenUSD has its own conversion surface, so either runtime could own them. Since
 `.vrm` is glTF plus humanoid and spring-bone extensions, whichever side owns it
 must preserve those, which is a reason to prefer the runtime that understands
 avatars.
+
+### Layering is already a first-class option
+
+`usd-export --mode <flat|overlay|layer-only|flatten> [--source <src.usda>]`
+directly addresses the fidelity concern below: the tool distinguishes
+preserving composition from collapsing it, rather than always flattening. An
+archival write should not use `flat` or `flatten` by default.
+
+`reconstruct-quads <in.usda> <out.usda> [planarity_deg]` is the tri-to-quad
+repair operation, with a planarity tolerance. It is the concrete case behind the
+repair verb above.
 
 ### This would be the repo's first dependency
 
