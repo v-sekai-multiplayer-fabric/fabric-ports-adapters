@@ -22,10 +22,13 @@ defmodule RivetFabric.BootstrapTest do
 
   defp spec, do: Spec.merge(%{network: "test-net"})
 
-  test "fresh nodes each name themselves, which is the split-cluster trap" do
+  test "nodes created without coordinators each name themselves" do
     s = spec()
     :ok = Fake.network_ensure(s.network)
 
+    # No FDB_COORDINATORS, which is what the discovery-then-restart approach
+    # produced. Kept as a regression: this is the state the bootstrap must
+    # never leave a cluster in.
     for name <- Spec.fdb_nodes(s) do
       :ok =
         Fake.node_ensure(%{
@@ -48,12 +51,12 @@ defmodule RivetFabric.BootstrapTest do
     refute Cluster.cluster_files_agree?(contents)
   end
 
-  test "full bootstrap converges every node onto one coordinator set" do
+  test "every node starts with the shared coordinator set, never a self-only one" do
     s = spec()
     assert {:ok, coordinators} = Bootstrap.foundationdb(Fake, s, "fdb:7.3.76")
 
-    assert coordinators ==
-             Cluster.coordinators(["10.89.0.1", "10.89.0.2", "10.89.0.3"], 4500)
+    expected = Enum.map(Spec.fdb_plan(s), &elem(&1, 1))
+    assert coordinators == Cluster.coordinators(expected, 4500)
 
     contents =
       for name <- Spec.fdb_nodes(s) do
@@ -77,9 +80,41 @@ defmodule RivetFabric.BootstrapTest do
            "agreement must be verified before the database is created"
   end
 
-  test "await_addresses fails rather than hanging when nodes never appear" do
-    assert {:error, msg} = Bootstrap.await_addresses(Fake, "nope", 3, 4500, 0)
-    assert msg =~ "0/3"
+  test "no node is restarted during bootstrap" do
+    s = spec()
+    {:ok, _} = Bootstrap.foundationdb(Fake, s, "fdb:7.3.76")
+
+    # podman assigns a new address on restart, which would invalidate the
+    # coordinator list the restart was meant to apply. Allocating addresses up
+    # front means no restart is needed at all.
+    assert Fake.state().restarts == []
+  end
+
+  test "bootstrap never signals PID 1 to reload config" do
+    s = spec()
+    {:ok, _} = Bootstrap.foundationdb(Fake, s, "fdb:7.3.76")
+
+    # The kernel discards unhandled signals sent to PID 1 from inside its own
+    # PID namespace, so this silently does nothing.
+    kills =
+      Enum.filter(Fake.state().execs, fn {_, _, argv} ->
+        Enum.any?(argv, &String.contains?(&1, "kill"))
+      end)
+
+    assert kills == []
+  end
+
+  test "addresses are static, so they survive a restart" do
+    s = spec()
+    {:ok, coordinators} = Bootstrap.foundationdb(Fake, s, "fdb:7.3.76")
+
+    :ok = Fake.node_restart(s.fdb.app, hd(Spec.fdb_nodes(s)))
+    {:ok, nodes} = Fake.node_list(s.fdb.app)
+
+    for n <- nodes do
+      assert String.contains?(coordinators, n.address),
+             "#{n.name} at #{n.address} is not in the coordinator set"
+    end
   end
 
   test "destroy removes every node" do

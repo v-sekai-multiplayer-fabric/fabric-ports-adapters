@@ -10,9 +10,9 @@ defmodule RivetFabric.Domain.Cluster do
   @doc """
   Format one coordinator address.
 
-  FoundationDB cluster files require IPv6 addresses to be bracketed. Fly's
-  private network (6PN) is IPv6-only, so this is the normal case there, not an
-  edge case.
+  FoundationDB cluster files require IPv6 addresses to be bracketed. The podman
+  network here is IPv4, so this is handled for correctness rather than exercised
+  by the default setup.
 
       iex> RivetFabric.Domain.Cluster.address("fdaa:0:5132::2", 4500)
       "[fdaa:0:5132::2]:4500"

@@ -1,7 +1,19 @@
 # syntax=docker/dockerfile:1
 #
 # Headless Godot MCP zone, hosted by container-runner as a Rivet actor.
-ARG GODOT_VERSION=4.7.1-stable
+#
+# The engine comes from v-sekai-multiplayer-fabric/godot-images, which builds
+# the fork's double-precision Godot. That build is not interchangeable with an
+# upstream godotengine.org release: the zone and its clients are compiled
+# against double-precision, and mixing precisions breaks networked state.
+#
+# The image is private, so before building either
+#   podman login ghcr.io
+# or build it locally from the godot-images repo, which ships quadlet .build
+# units for exactly this:
+#   systemctl --user start zone-godot-runtime-build
+ARG GODOT_RUNTIME_IMAGE=ghcr.io/v-sekai-multiplayer-fabric/zone-godot-runtime
+ARG GODOT_RUNTIME_TAG=latest
 ARG RUST_VERSION=1
 ARG RIVET_REPO=https://github.com/v-sekai-multiplayer-fabric/rivet.git
 ARG RIVET_REF=a6cd747fcd49e9f28f9c8a0c622456e763e3d771
@@ -24,27 +36,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && cp target/release/rivet-container-runner /rivet-container-runner \
     && cp -r container-runner/examples/godot-demo /godot-demo
 
-# Godot 4 ships one Linux binary that runs headless under --headless, so there
-# is no separate server download.
-FROM docker.io/library/debian:bookworm-slim AS godot-fetch
-ARG GODOT_VERSION
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl unzip \
-    && rm -rf /var/lib/apt/lists/*
-RUN curl -fsSL -o /tmp/godot.zip \
-      "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}/Godot_v${GODOT_VERSION}_linux.x86_64.zip" \
-    && unzip -q /tmp/godot.zip -d /tmp/godot \
-    && mv /tmp/godot/Godot_v${GODOT_VERSION}_linux.x86_64 /godot \
-    && chmod +x /godot
+FROM ${GODOT_RUNTIME_IMAGE}:${GODOT_RUNTIME_TAG}
 
-FROM docker.io/library/debian:bookworm-slim
-# Godot links against these even under --headless.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        ca-certificates libfontconfig1 libfreetype6 \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY --from=godot-fetch /godot /usr/local/bin/godot
 COPY --from=runner-builder /rivet-container-runner /usr/local/bin/rivet-container-runner
 COPY --from=runner-builder /godot-demo/entrypoint.sh /usr/local/bin/godot-zone-entrypoint
 COPY --from=runner-builder /godot-demo/project /opt/zone

@@ -5,23 +5,19 @@ defmodule RivetFabric.CLI do
       mix run -e 'RivetFabric.CLI.main(["fdb-up"])'
       ./rivet_fabric fdb-up            # after `mix escript.build`
 
-  The substrate is chosen with `--substrate quadlet|fly`, defaulting to quadlet
-  because local testing is the point of this repo.
+  The only substrate is podman + systemd quadlets.
   """
 
-  alias RivetFabric.Adapters.{Fly, Quadlet}
+  alias RivetFabric.Adapters.Quadlet
   alias RivetFabric.{Bootstrap, Shell}
   alias RivetFabric.Domain.Spec
 
   @assets Path.expand("../../assets", __DIR__)
 
   def main(argv) do
-    {opts, args, _} =
-      OptionParser.parse(argv,
-        strict: [substrate: :string, count: :integer, region: :string, org: :string]
-      )
+    {opts, args, _} = OptionParser.parse(argv, strict: [count: :integer])
 
-    adapter = adapter_for(Keyword.get(opts, :substrate, "quadlet"))
+    adapter = Quadlet
     spec = build_spec(opts)
 
     case args do
@@ -34,30 +30,14 @@ defmodule RivetFabric.CLI do
     end
   end
 
-  defp adapter_for("quadlet"), do: Quadlet
-  defp adapter_for("fly"), do: Fly
-
-  defp adapter_for(other) do
-    IO.puts(:stderr, "unknown substrate: #{other} (expected quadlet or fly)")
-    System.halt(2)
-  end
-
   defp build_spec(opts) do
-    overrides =
-      %{}
-      |> maybe_put(:region, Keyword.get(opts, :region))
-      |> maybe_put(:org, Keyword.get(opts, :org))
-
-    spec = Spec.merge(overrides)
+    spec = Spec.merge(%{})
 
     case Keyword.get(opts, :count) do
       nil -> spec
       n -> put_in(spec, [:fdb, :count], n)
     end
   end
-
-  defp maybe_put(map, _k, nil), do: map
-  defp maybe_put(map, k, v), do: Map.put(map, k, v)
 
   defp fdb_up(adapter, spec) do
     image =
@@ -73,7 +53,16 @@ defmodule RivetFabric.CLI do
     case Bootstrap.foundationdb(adapter, spec, image) do
       {:ok, coordinators} ->
         IO.puts("\ncoordinators: #{coordinators}")
-        fdb_status(adapter, spec)
+        node = hd(Spec.fdb_nodes(spec))
+
+        case Bootstrap.await_available(adapter, spec.fdb.app, node) do
+          {:ok, out} ->
+            IO.puts(out)
+
+          {:error, reason} ->
+            IO.puts(:stderr, "cluster came up but never became available: #{reason}")
+            System.halt(1)
+        end
 
       {:error, reason} ->
         IO.puts(:stderr, "\nbootstrap failed: #{reason}")
@@ -129,7 +118,7 @@ defmodule RivetFabric.CLI do
     IO.puts("destroyed")
   end
 
-  defp doctor(Quadlet) do
+  defp doctor(_adapter) do
     check("podman", Shell.available?("podman"))
     check("systemctl", Shell.available?("systemctl"))
 
@@ -139,13 +128,6 @@ defmodule RivetFabric.CLI do
     {out, _} = Shell.run("systemctl", ["--user", "is-system-running"], log: false)
     IO.puts("  user systemd: #{String.trim(out)}")
     IO.puts("  unit dir:     #{Quadlet.unit_dir()}")
-  end
-
-  defp doctor(Fly) do
-    check("flyctl", Shell.available?("flyctl"))
-    {out, code} = Shell.run("flyctl", ["auth", "whoami"], log: false)
-    check("flyctl authenticated", code == 0)
-    if code == 0, do: IO.puts("  account: #{String.trim(out)}")
   end
 
   defp check(label, true), do: IO.puts("  ok      #{label}")
@@ -162,10 +144,7 @@ defmodule RivetFabric.CLI do
       doctor        check the substrate prerequisites
 
     options
-      --substrate quadlet|fly   default quadlet
-      --count N                 FoundationDB node count (default 3)
-      --region R                Fly region (default sjc)
-      --org O                   Fly org (default personal)
+      --count N     FoundationDB node count (default 3)
     """)
   end
 end

@@ -2,168 +2,176 @@ defmodule RivetFabric.Bootstrap do
   @moduledoc """
   The bootstrap sequence, written against the substrate port.
 
-  The ordering here is the whole point of the repo. FoundationDB coordinators
-  are addressed by IP, and the addresses do not exist until the nodes do, so the
-  sequence is necessarily two-phase:
+  ## Why addresses are allocated, not discovered
 
-      1. create nodes, each of which bootstraps as its own sole coordinator
-      2. read the addresses back
-      3. force every node onto one shared coordinator set
-      4. only then `configure new`
+  FoundationDB coordinators are addressed by IP, so a cluster cannot form until
+  the addresses are known. The obvious sequence is to create the nodes, read
+  their addresses back, rewrite each cluster file, and restart. That does not
+  work under podman, and every step of the failure is quiet:
 
-  Skipping step 3 leaves N independent one-node clusters that each report
-  `FDBD joined cluster` and look healthy. Step 4 then succeeds against exactly
-  one of them and the rest are silently orphaned.
+  * A node created without `FDB_COORDINATORS` names itself as sole coordinator.
+    N such nodes are N independent one-node clusters, and each logs
+    `FDBD joined cluster`, so they all look healthy.
+  * Rewriting the cluster file is not enough: `fdbserver` reads it once at
+    startup, and signalling PID 1 from inside the container is discarded by the
+    kernel, so the restart must come from the substrate.
+  * That restart then assigns a **new** address, invalidating the coordinator
+    list just written. The sequence is circular.
+
+  Allocating static addresses up front removes all three problems at once. The
+  coordinator set is known before anything exists, so it is passed at creation
+  and no node ever runs with a self-only cluster file.
   """
 
   require Logger
 
   alias RivetFabric.Domain.{Cluster, Spec}
 
-  @doc """
-  Bring up the FoundationDB cluster.
-
-  Returns `{:ok, coordinators}` where `coordinators` is the comma-joined
-  coordinator string the engine needs.
-  """
+  @doc "Bring up the FoundationDB cluster. Returns `{:ok, coordinators}`."
   def foundationdb(adapter, spec, image) do
-    app = spec.fdb.app
-    names = Spec.fdb_nodes(spec)
+    plan = Spec.fdb_plan(spec)
+    coordinators = Cluster.coordinators(Enum.map(plan, &elem(&1, 1)), spec.fdb.port)
+    names = Enum.map(plan, &elem(&1, 0))
 
-    Logger.info("creating #{length(names)} foundationdb nodes")
+    Logger.info("coordinators allocated up front: #{coordinators}")
 
-    :ok = adapter.network_ensure(spec.network)
-
-    for name <- names do
-      :ok =
-        adapter.node_ensure(%{
-          app: app,
-          name: name,
-          image: image,
-          network: spec.network,
-          volume: {"#{app}-#{name}", "/var/fdb"},
-          env: %{
-            "FDB_PORT" => to_string(spec.fdb.port),
-            "FDB_CLUSTER_FILE" => "/var/fdb/fdb.cluster",
-            "FDB_CLUSTER_DESCRIPTION" => spec.fdb.cluster_description,
-            "FDB_CLUSTER_ID" => spec.fdb.cluster_id
-          }
-        })
-    end
-
-    with {:ok, coordinators} <- await_addresses(adapter, app, length(names), spec.fdb.port),
-         :ok <- force_shared_coordinators(adapter, spec, names, coordinators),
-         :ok <- verify_agreement(adapter, app, names),
-         :ok <- configure(adapter, app, hd(names), length(names), spec.fdb.storage) do
+    with :ok <-
+           adapter.network_ensure(spec.network, subnet: spec.subnet, gateway: spec.gateway),
+         :ok <- create_nodes(adapter, spec, plan, image, coordinators),
+         :ok <- verify_agreement(adapter, spec.fdb.app, names),
+         :ok <-
+           configure(adapter, spec.fdb.app, hd(names), length(names), spec.fdb.storage) do
       {:ok, coordinators}
     end
   end
 
-  @doc """
-  Poll until every node reports an address, then build the coordinator string.
+  defp create_nodes(adapter, spec, plan, image, coordinators) do
+    Enum.reduce_while(plan, :ok, fn {name, ip}, _acc ->
+      node = %{
+        app: spec.fdb.app,
+        name: name,
+        image: image,
+        network: spec.network,
+        ip: ip,
+        volume: {"#{spec.fdb.app}-#{name}", "/var/fdb"},
+        env: %{
+          "FDB_PORT" => to_string(spec.fdb.port),
+          "FDB_PUBLIC_IP" => ip,
+          "FDB_COORDINATORS" => coordinators,
+          "FDB_CLUSTER_FILE" => "/var/fdb/fdb.cluster",
+          "FDB_CLUSTER_DESCRIPTION" => spec.fdb.cluster_description,
+          "FDB_CLUSTER_ID" => spec.fdb.cluster_id
+        }
+      }
 
-  Addresses appear asynchronously after the container starts, so this waits
-  rather than assuming.
-  """
-  def await_addresses(adapter, app, expected, port, attempts \\ 30) do
-    case adapter.node_list(app) do
-      {:ok, nodes} ->
-        ips = nodes |> Enum.map(& &1.address) |> Enum.reject(&is_nil/1)
-
-        cond do
-          length(ips) >= expected ->
-            {:ok, Cluster.coordinators(ips, port)}
-
-          attempts <= 0 ->
-            {:error, "only #{length(ips)}/#{expected} nodes reported an address"}
-
-          true ->
-            Process.sleep(1000)
-            await_addresses(adapter, app, expected, port, attempts - 1)
-        end
-
-      err ->
-        err
-    end
-  end
-
-  @doc """
-  Overwrite every node's cluster file with the shared coordinator set.
-
-  The entrypoint only seeds the cluster file when it is absent, because
-  `fdbserver` rewrites it whenever coordinators change and a redeploy must not
-  clobber a live set. This is the deliberate one-shot override.
-  """
-  def force_shared_coordinators(adapter, spec, names, coordinators) do
-    contents =
-      Cluster.cluster_file(spec.fdb.cluster_description, spec.fdb.cluster_id, coordinators)
-
-    Logger.info("forcing shared coordinators: #{coordinators}")
-
-    Enum.reduce_while(names, :ok, fn name, _acc ->
-      case adapter.node_write_file(
-             spec.fdb.app,
-             name,
-             "/var/fdb/fdb.cluster",
-             contents <> "\n"
-           ) do
-        :ok ->
-          # fdbserver reads the cluster file at startup, so it has to come back.
-          _ = adapter.node_exec(spec.fdb.app, name, ["sh", "-c", "kill 1"])
-          {:cont, :ok}
-
-        err ->
-          {:halt, err}
+      case adapter.node_ensure(node) do
+        :ok -> {:cont, :ok}
+        err -> {:halt, err}
       end
     end)
   end
 
-  @doc "Fail loudly if the nodes disagree, rather than configuring a split cluster."
-  def verify_agreement(adapter, app, names) do
-    Process.sleep(3000)
+  @doc """
+  Fail loudly if the nodes disagree, rather than configuring a split cluster.
 
+  Cheap, and it is what distinguishes "three nodes in one cluster" from "three
+  one-node clusters that each look healthy".
+  """
+  def verify_agreement(adapter, app, names, attempts \\ 20) do
     contents =
       Enum.map(names, fn name ->
         case adapter.node_exec(app, name, ["cat", "/var/fdb/fdb.cluster"]) do
           {:ok, out} -> out
-          {:error, _} -> "<unreadable>"
+          {:error, _} -> ""
         end
       end)
 
-    if Cluster.cluster_files_agree?(contents) do
-      :ok
-    else
-      {:error,
-       "nodes disagree on the coordinator set, which means a split cluster:\n" <>
-         Enum.join(contents, "")}
+    cond do
+      Enum.any?(contents, &(String.trim(&1) == "")) and attempts > 0 ->
+        Process.sleep(1000)
+        verify_agreement(adapter, app, names, attempts - 1)
+
+      Cluster.cluster_files_agree?(contents) ->
+        :ok
+
+      attempts > 0 ->
+        Process.sleep(1000)
+        verify_agreement(adapter, app, names, attempts - 1)
+
+      true ->
+        {:error,
+         "nodes disagree on the coordinator set, which means a split cluster:\n" <>
+           Enum.join(contents, "")}
     end
   end
 
-  @doc "Create the database. Idempotent in effect: a second run is a no-op error."
-  def configure(adapter, app, name, node_count, storage) do
-    cmd = Cluster.configure_command(node_count, storage)
-    Logger.info("#{cmd}")
+  @doc """
+  Create the database.
 
-    case adapter.node_exec(app, name, [
-           "fdbcli",
-           "-C",
-           "/var/fdb/fdb.cluster",
-           "--exec",
-           cmd
-         ]) do
+  Retries, because the coordinators need a moment to elect before `configure`
+  can win. Re-running against a live cluster is an error from fdbcli's point of
+  view but not from ours.
+  """
+  def configure(adapter, app, name, node_count, storage, attempts \\ 30) do
+    cmd = Cluster.configure_command(node_count, storage)
+
+    case adapter.node_exec(app, name, ["fdbcli", "-C", "/var/fdb/fdb.cluster", "--exec", cmd]) do
       {:ok, out} ->
-        if String.contains?(out, "Database created") or
-             String.contains?(out, "already exists") do
-          :ok
-        else
-          Logger.warning("unexpected configure output: #{String.trim(out)}")
-          :ok
+        cond do
+          String.contains?(out, "Database created") ->
+            Logger.info("#{cmd}: database created")
+            :ok
+
+          String.contains?(out, "already") ->
+            Logger.info("#{cmd}: database already exists")
+            :ok
+
+          attempts > 0 ->
+            Process.sleep(2000)
+            configure(adapter, app, name, node_count, storage, attempts - 1)
+
+          true ->
+            {:error, "configure did not take: #{String.trim(out)}"}
         end
 
       {:error, reason} ->
-        # Re-running against a live cluster errors, which is not fatal.
-        Logger.warning("configure returned an error, continuing: #{reason}")
-        :ok
+        if attempts > 0 do
+          Process.sleep(2000)
+          configure(adapter, app, name, node_count, storage, attempts - 1)
+        else
+          {:error, "configure failed: #{reason}"}
+        end
+    end
+  end
+
+  @doc """
+  Wait for the database to report itself available.
+
+  `configure new` succeeding only means the configuration was accepted;
+  recruitment happens afterwards, so this is a separate wait.
+  """
+  def await_available(adapter, app, name, attempts \\ 60) do
+    case status(adapter, app, name) do
+      {:ok, out} ->
+        cond do
+          String.contains?(out, "available") and not String.contains?(out, "unavailable") ->
+            {:ok, String.trim(out)}
+
+          attempts > 0 ->
+            Process.sleep(2000)
+            await_available(adapter, app, name, attempts - 1)
+
+          true ->
+            {:error, "database never became available: #{String.trim(out)}"}
+        end
+
+      {:error, reason} ->
+        if attempts > 0 do
+          Process.sleep(2000)
+          await_available(adapter, app, name, attempts - 1)
+        else
+          {:error, reason}
+        end
     end
   end
 
@@ -186,11 +194,8 @@ defmodule RivetFabric.Bootstrap do
 
     for app <- [spec.engine.app, spec.godot.app] do
       case adapter.node_list(app) do
-        {:ok, nodes} ->
-          for n <- nodes, do: adapter.node_destroy(app, n.name)
-
-        _ ->
-          :ok
+        {:ok, nodes} -> for n <- nodes, do: adapter.node_destroy(app, n.name)
+        _ -> :ok
       end
     end
 

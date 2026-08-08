@@ -1,11 +1,12 @@
 defmodule RivetFabric.ClusterTest do
   use ExUnit.Case, async: true
   doctest RivetFabric.Domain.Cluster
+  doctest RivetFabric.Domain.Spec
 
-  alias RivetFabric.Domain.Cluster
+  alias RivetFabric.Domain.{Cluster, Spec}
 
   describe "address/2" do
-    test "brackets IPv6, which is what Fly 6PN hands out" do
+    test "brackets IPv6, which cluster files require" do
       assert Cluster.address("fdaa:0:5132:a7b:70:9779:90d6:2", 4500) ==
                "[fdaa:0:5132:a7b:70:9779:90d6:2]:4500"
     end
@@ -88,6 +89,27 @@ defmodule RivetFabric.ClusterTest do
                "rivet:rivet@10.89.0.1:4500,10.89.0.2:4500\n",
                "rivet:rivet@10.89.0.1:4500,10.89.0.2:4500"
              ])
+    end
+  end
+
+  describe "fdb_plan/1" do
+    test "assigns a distinct static address to every node" do
+      plan = Spec.fdb_plan(Spec.default())
+      ips = Enum.map(plan, &elem(&1, 1))
+
+      assert length(plan) == 3
+      assert ips == Enum.uniq(ips)
+      assert ips == ["10.89.100.11", "10.89.100.12", "10.89.100.13"]
+    end
+
+    test "is deterministic, so a re-run reuses the same coordinators" do
+      assert Spec.fdb_plan(Spec.default()) == Spec.fdb_plan(Spec.default())
+    end
+
+    test "never collides with the gateway" do
+      spec = Spec.default()
+      ips = spec |> Spec.fdb_plan() |> Enum.map(&elem(&1, 1))
+      refute spec.gateway in ips
     end
   end
 

@@ -4,12 +4,11 @@ defmodule RivetFabric.Adapters.Quadlet do
 
   Each node becomes a `.container` unit under
   `~/.config/containers/systemd/`, which the podman user generator turns into a
-  systemd service on `daemon-reload`. This is the local test path: it exercises
-  the same address-discovery and bootstrap ordering as Fly without provisioning
-  anything billable.
+  systemd service on `daemon-reload`.
 
-  Rootless podman is assumed. Containers share a user network, so peers reach
-  each other by container name and by IP, which is what FoundationDB needs.
+  Rootless podman is assumed. Nodes share a user network with an explicit
+  subnet and are given static addresses, because FoundationDB records
+  coordinators by IP and podman otherwise reassigns addresses on restart.
   """
 
   @behaviour RivetFabric.Ports.Substrate
@@ -25,18 +24,26 @@ defmodule RivetFabric.Adapters.Quadlet do
   defp service(app, name), do: "#{unit_name(app, name)}.service"
 
   @impl true
-  def network_ensure(net) do
+  def network_ensure(net, opts \\ []) do
     case Shell.run("podman", ["network", "exists", net]) do
       {_, 0} ->
         :ok
 
       _ ->
-        case Shell.run("podman", ["network", "create", net]) do
+        args =
+          ["network", "create"] ++
+            subnet_args(Keyword.get(opts, :subnet), Keyword.get(opts, :gateway)) ++ [net]
+
+        case Shell.run("podman", args) do
           {_, 0} -> :ok
           {out, code} -> {:error, "network create failed (#{code}): #{tail(out)}"}
         end
     end
   end
+
+  defp subnet_args(nil, _), do: []
+  defp subnet_args(subnet, nil), do: ["--subnet", subnet]
+  defp subnet_args(subnet, gateway), do: ["--subnet", subnet, "--gateway", gateway]
 
   @impl true
   def image_ensure(%{tag: tag, containerfile: containerfile, context: context} = spec) do
@@ -86,10 +93,14 @@ defmodule RivetFabric.Adapters.Quadlet do
         _ -> []
       end
 
+    # A static address is not a nicety. podman reassigns addresses on restart,
+    # and a FoundationDB coordinator list records them, so a restart would
+    # otherwise orphan the cluster from its own coordinators.
     network =
-      case Map.get(spec, :network) do
-        nil -> []
-        net -> ["Network=#{net}"]
+      case {Map.get(spec, :network), Map.get(spec, :ip)} do
+        {nil, _} -> []
+        {net, nil} -> ["Network=#{net}"]
+        {net, ip} -> ["Network=#{net}:ip=#{ip}"]
       end
 
     command =
@@ -224,6 +235,16 @@ defmodule RivetFabric.Adapters.Quadlet do
 
     File.rm(tmp)
     result
+  end
+
+  @impl true
+  def node_restart(app, name) do
+    case Shell.run("systemctl", ["--user", "restart", service(app, name)],
+           timeout: :timer.minutes(5)
+         ) do
+      {_, 0} -> :ok
+      {out, code} -> {:error, "restart failed (#{code}): #{tail(out)}"}
+    end
   end
 
   @impl true

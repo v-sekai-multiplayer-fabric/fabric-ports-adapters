@@ -2,19 +2,17 @@ defmodule RivetFabric.Ports.Substrate do
   @moduledoc """
   The substrate port.
 
-  Everything the bootstrap needs from the outside world, in substrate-neutral
-  terms, so the same sequence runs against systemd quadlets locally and Fly.io
-  remotely.
+  Everything the bootstrap needs from the outside world, stated in terms of
+  nodes rather than containers, so the sequence in `RivetFabric.Bootstrap` stays
+  free of podman specifics and can be exercised against an in-memory fake.
 
-  A **node** is one running instance with a stable name, an address its peers
-  can reach, and optional persistent storage. That describes a podman container
-  under quadlet and a machine on Fly equally well, and the domain logic does not
-  know which it is talking to.
+  A **node** is one running instance with a stable name, a fixed address its
+  peers can reach, and optional persistent storage. Under the quadlet adapter
+  that is a podman container driven by a `.container` systemd unit.
 
-  This distinction is what makes FoundationDB testable at all: the cluster is
-  addressed by IP, and the bootstrap has to read addresses back after creating
-  nodes. Both substrates support that, so the tricky ordering can be exercised
-  locally before it costs money.
+  Addresses are assigned by the caller, not discovered, because podman gives a
+  container a new address on every restart. See `RivetFabric.Bootstrap` for why
+  that matters.
   """
 
   @type app :: String.t()
@@ -28,7 +26,8 @@ defmodule RivetFabric.Ports.Substrate do
           optional(:volume) => {String.t(), String.t()} | nil,
           optional(:publish) => [{non_neg_integer(), non_neg_integer()}],
           optional(:command) => [String.t()],
-          optional(:network) => String.t()
+          optional(:network) => String.t(),
+          optional(:ip) => String.t()
         }
 
   @type node_info :: %{name: node_name, address: String.t() | nil, state: atom()}
@@ -40,8 +39,13 @@ defmodule RivetFabric.Ports.Substrate do
           optional(:build_args) => %{String.t() => String.t()}
         }
 
-  @doc "Create the shared network if it does not exist."
-  @callback network_ensure(String.t()) :: :ok | {:error, term()}
+  @doc """
+  Create the shared network if absent, with a caller-chosen subnet.
+
+  The subnet is explicit so node addresses can be allocated up front instead of
+  discovered after the fact.
+  """
+  @callback network_ensure(String.t(), keyword()) :: :ok | {:error, term()}
 
   @doc "Build or pull an image, returning the tag other calls should reference."
   @callback image_ensure(image_spec) :: {:ok, String.t()} | {:error, term()}
@@ -62,6 +66,16 @@ defmodule RivetFabric.Ports.Substrate do
   variables. See `RivetFabric.Domain.Cluster.topology/1`.
   """
   @callback node_write_file(app, node_name, String.t(), String.t()) :: :ok | {:error, term()}
+
+  @doc """
+  Restart a node from outside its PID namespace.
+
+  Required because rewriting a config file is not enough: `fdbserver` reads the
+  cluster file once at startup. Signalling PID 1 from *inside* the container
+  does not work, since the kernel discards unhandled signals sent to PID 1 from
+  within its own PID namespace, so the restart has to come from the substrate.
+  """
+  @callback node_restart(app, node_name) :: :ok | {:error, term()}
 
   @callback node_stop(app, node_name) :: :ok | {:error, term()}
   @callback node_destroy(app, node_name) :: :ok | {:error, term()}

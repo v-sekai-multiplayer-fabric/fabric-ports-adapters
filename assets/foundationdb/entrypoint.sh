@@ -1,9 +1,9 @@
 #!/bin/bash
 # One fdbserver process per node.
 #
-# Substrate-neutral. On Fly the address comes from FLY_PRIVATE_IP and is IPv6
-# (6PN is IPv6-only, so it gets bracketed). Under podman it is auto-detected and
-# is normally IPv4. FDB_PUBLIC_IP overrides both.
+# FDB_PUBLIC_IP is set by the orchestrator to a statically allocated address,
+# because podman reassigns addresses on restart and a coordinator list records
+# them. Auto-detection is only a fallback for running the image by hand.
 set -euo pipefail
 
 : "${FDB_PORT:=4500}"
@@ -17,8 +17,6 @@ set -euo pipefail
 detect_ip() {
 	if [ -n "${FDB_PUBLIC_IP:-}" ]; then
 		echo "${FDB_PUBLIC_IP}"
-	elif [ -n "${FLY_PRIVATE_IP:-}" ]; then
-		echo "${FLY_PRIVATE_IP}"
 	else
 		hostname -i | awk '{print $1}'
 	fi

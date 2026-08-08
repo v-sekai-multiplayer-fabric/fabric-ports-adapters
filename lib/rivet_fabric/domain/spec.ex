@@ -2,18 +2,28 @@ defmodule RivetFabric.Domain.Spec do
   @moduledoc """
   The cluster specification. Pure data.
 
-  Versions are pinned rather than floating because two of them are coupled:
-  the engine image embeds `libfdb_c.so`, and its version must be
+  Versions are pinned rather than floating because two of them are coupled: the
+  engine image embeds `libfdb_c.so`, and its version must stay
   protocol-compatible with the `fdbserver` running in the FoundationDB nodes.
   Bumping one without the other fails at connect time.
+
+  Node addresses are **static**. Podman assigns a fresh address on every
+  restart, so any scheme that discovers addresses after creation is circular:
+  the restart that applies a new cluster file also invalidates the addresses in
+  it. Allocating addresses up front removes the problem instead of working
+  around it.
   """
 
   def default do
     %{
-      org: "personal",
-      # sea is deprecated on Fly and rejects new volume provisioning.
-      region: "sjc",
       network: "rivet-fabric",
+      # A dedicated subnet, so allocation is ours and does not collide with
+      # podman's default 10.89.0.0/24 pool.
+      subnet: "10.89.100.0/24",
+      gateway: "10.89.100.1",
+      # Node N gets host address ip_base + N.
+      ip_prefix: "10.89.100.",
+      ip_base: 10,
       fdb: %{
         app: "mf-rivet-fdb",
         port: 4500,
@@ -23,7 +33,6 @@ defmodule RivetFabric.Domain.Spec do
         storage: "ssd",
         cluster_description: "rivet",
         cluster_id: "rivet",
-        volume_size_gb: 10,
         version: "7.3.76"
       },
       engine: %{
@@ -42,7 +51,13 @@ defmodule RivetFabric.Domain.Spec do
         # container-runner's default serverless base path.
         base_path: "/api/rivet",
         port: 8080,
-        godot_version: "4.7.1-stable",
+        # The fork's double-precision build, from
+        # v-sekai-multiplayer-fabric/godot-images. Not interchangeable with an
+        # upstream godotengine.org release: mixing precisions breaks networked
+        # state between the zone and its clients. The package is private, so it
+        # needs `podman login ghcr.io` or a local build from that repo.
+        runtime_image: "ghcr.io/v-sekai-multiplayer-fabric/zone-godot-runtime",
+        runtime_tag: "latest",
         mcp_repo: "https://github.com/v-sekai-multiplayer-fabric/vsekai-godot-mcp",
         mcp_commit: "580bb5fedc7c1bb56eb38b8377f918d9c5ffc998",
         request_lifespan: 900,
@@ -60,8 +75,36 @@ defmodule RivetFabric.Domain.Spec do
     end)
   end
 
-  @doc "Node names for the FoundationDB app, stable and ordered."
+  @doc """
+  Node names for the FoundationDB app, stable and ordered.
+
+      iex> RivetFabric.Domain.Spec.fdb_nodes(RivetFabric.Domain.Spec.default())
+      ["mf-rivet-fdb-1", "mf-rivet-fdb-2", "mf-rivet-fdb-3"]
+  """
   def fdb_nodes(spec) do
     for i <- 1..spec.fdb.count, do: "#{spec.fdb.app}-#{i}"
+  end
+
+  @doc """
+  Statically allocated address for node N, one-indexed.
+
+      iex> RivetFabric.Domain.Spec.fdb_ip(RivetFabric.Domain.Spec.default(), 1)
+      "10.89.100.11"
+  """
+  def fdb_ip(spec, index) do
+    "#{spec.ip_prefix}#{spec.ip_base + index}"
+  end
+
+  @doc """
+  Every FoundationDB node paired with its address, in order.
+
+  Known before anything is created, which is what lets the coordinator set be
+  supplied at node creation rather than discovered afterwards.
+  """
+  def fdb_plan(spec) do
+    spec
+    |> fdb_nodes()
+    |> Enum.with_index(1)
+    |> Enum.map(fn {name, i} -> {name, fdb_ip(spec, i)} end)
   end
 end

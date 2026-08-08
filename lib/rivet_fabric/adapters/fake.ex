@@ -21,6 +21,7 @@ defmodule RivetFabric.Adapters.Fake do
           images: MapSet.new(),
           files: %{},
           execs: [],
+          restarts: [],
           applied: 0,
           next_ip: Keyword.get(opts, :first_ip, 1)
         }
@@ -33,7 +34,7 @@ defmodule RivetFabric.Adapters.Fake do
   def state, do: Agent.get(__MODULE__, & &1)
 
   @impl true
-  def network_ensure(net) do
+  def network_ensure(net, _opts \\ []) do
     Agent.update(__MODULE__, &%{&1 | networks: MapSet.put(&1.networks, net)})
     :ok
   end
@@ -48,16 +49,21 @@ defmodule RivetFabric.Adapters.Fake do
   def node_ensure(spec) do
     Agent.update(__MODULE__, fn s ->
       key = {spec.app, spec.name}
-      ip = "10.89.0.#{s.next_ip}"
+      # Honour a caller-assigned address, mirroring the quadlet adapter.
+      ip = Map.get(spec, :ip) || "10.89.0.#{s.next_ip}"
 
       # A fresh FoundationDB node names itself as sole coordinator, exactly as
       # the real entrypoint does when FDB_COORDINATORS is unset.
+      # Mirrors the entrypoint: seed the cluster file from FDB_COORDINATORS when
+      # supplied, otherwise name only this node. The second branch is the
+      # split-cluster trap, kept so tests can still reproduce it.
       files =
         if String.contains?(spec.app, "fdb") do
           desc = get_in(spec, [:env, "FDB_CLUSTER_DESCRIPTION"]) || "rivet"
           id = get_in(spec, [:env, "FDB_CLUSTER_ID"]) || "rivet"
           port = get_in(spec, [:env, "FDB_PORT"]) || "4500"
-          Map.put(s.files, {key, "/var/fdb/fdb.cluster"}, "#{desc}:#{id}@#{ip}:#{port}\n")
+          coords = get_in(spec, [:env, "FDB_COORDINATORS"]) || "#{ip}:#{port}"
+          Map.put(s.files, {key, "/var/fdb/fdb.cluster"}, "#{desc}:#{id}@#{coords}\n")
         else
           s.files
         end
@@ -103,6 +109,12 @@ defmodule RivetFabric.Adapters.Fake do
   @impl true
   def node_write_file(app, name, path, content) do
     Agent.update(__MODULE__, &%{&1 | files: Map.put(&1.files, {{app, name}, path}, content)})
+    :ok
+  end
+
+  @impl true
+  def node_restart(app, name) do
+    Agent.update(__MODULE__, &%{&1 | restarts: &1.restarts ++ [{app, name}]})
     :ok
   end
 
