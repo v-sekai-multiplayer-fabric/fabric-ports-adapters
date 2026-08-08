@@ -37,6 +37,7 @@ it cost. [RFD 0000](0000-how-to-write-an-rfd.md) describes the conventions.
 | [0017](0017-engine-bring-up.md) | Engine bring-up and runner registration | code exists, never run |
 | [0018](0018-authority-and-the-trusted-substrate.md) | Authority, and what the substrate already guarantees | analysis |
 | [0019](0019-large-value-conformance.md) | Large-value conformance on FoundationDB | proposed, nothing run |
+| [0020](0020-cross-actor-transactions.md) | Cross-actor linearizable transactions | analysis, not recommended |
 
 ## Where to start
 
