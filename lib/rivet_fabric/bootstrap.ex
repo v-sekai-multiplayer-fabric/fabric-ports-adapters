@@ -26,7 +26,7 @@ defmodule RivetFabric.Bootstrap do
   require Logger
 
   alias RivetFabric.Domain.{Cluster, Spec}
-  alias RivetFabric.Quadlet
+  alias RivetFabric.{Http, Quadlet}
 
   @doc "Bring up the FoundationDB cluster. Returns `{:ok, coordinators}`."
   def foundationdb(spec, image) do
@@ -173,6 +173,103 @@ defmodule RivetFabric.Bootstrap do
         else
           {:error, reason}
         end
+    end
+  end
+
+  @doc """
+  Bring up the Rivet engine against the FoundationDB cluster.
+
+  Two things have to be written into the node rather than passed as environment
+  variables:
+
+  * The topology, because `topology.datacenters` deserializes through an
+    untagged enum that the env-var source cannot merge into. See
+    [RFD 0003](../../rfd/0003-engine-configuration.md).
+  * The cluster file, so the engine talks to the same coordinators the nodes
+    agreed on rather than deriving its own.
+  """
+  def engine(spec, image, coordinators) do
+    name = spec.engine.app
+    host = Quadlet.container_name(spec.engine.app, name)
+
+    :ok =
+      Quadlet.node_ensure(%{
+        app: spec.engine.app,
+        name: name,
+        image: image,
+        network: spec.network,
+        ip: spec.engine.ip,
+        publish: [{spec.engine.port, spec.engine.port}],
+        env: %{
+          "RIVET__FOUNDATIONDB__CLUSTER_FILE" => "/etc/foundationdb/fdb.cluster",
+          "RIVET__AUTH__ADMIN_TOKEN" => spec.engine.admin_token
+        }
+      })
+
+    # public_url must be reachable from other containers. The default is
+    # http://127.0.0.1:6420, which an envoy resolves inside its own container.
+    topology =
+      Cluster.topology(
+        host: host,
+        port: spec.engine.port,
+        peer_port: spec.engine.peer_port
+      )
+
+    cluster_file =
+      Cluster.cluster_file(
+        spec.fdb.cluster_description,
+        spec.fdb.cluster_id,
+        coordinators
+      )
+
+    with :ok <-
+           Quadlet.node_write_file(
+             spec.engine.app,
+             name,
+             "/etc/rivet/topology.json",
+             JSON.encode!(topology) <> "\n"
+           ),
+         :ok <-
+           Quadlet.node_write_file(
+             spec.engine.app,
+             name,
+             "/etc/foundationdb/fdb.cluster",
+             cluster_file <> "\n"
+           ),
+         :ok <- Quadlet.node_restart(spec.engine.app, name),
+         {:ok, body} <- Http.await_ok(engine_url(spec) <> "/health") do
+      {:ok, body}
+    end
+  end
+
+  @doc "Base URL for the engine, as reached from the host."
+  def engine_url(spec), do: "http://127.0.0.1:#{spec.engine.port}"
+
+  @doc """
+  Register a container as a serverless runner.
+
+  `Cluster.runner_config/2` rejects a `drain_grace_period` that is not strictly
+  less than `request_lifespan` before the engine can, per
+  [RFD 0010](../../rfd/0010-serverless-runner-configuration.md).
+  """
+  def register_runner(spec, url) do
+    with {:ok, config} <-
+           Cluster.runner_config(url,
+             request_lifespan: spec.godot.request_lifespan,
+             drain_grace_period: spec.godot.drain_grace_period,
+             max_concurrent_actors: spec.godot.max_concurrent_actors
+           ) do
+      endpoint =
+        engine_url(spec) <>
+          "/runner-configs/#{spec.godot.runner_name}?namespace=default"
+
+      case Http.put_json(endpoint, %{"datacenters" => config["datacenters"]}, [
+             {"authorization", "Bearer " <> spec.engine.admin_token}
+           ]) do
+        {:ok, 200, body} -> {:ok, body}
+        {:ok, status, body} -> {:error, "engine returned #{status}: #{body}"}
+        {:error, reason} -> {:error, inspect(reason)}
+      end
     end
   end
 

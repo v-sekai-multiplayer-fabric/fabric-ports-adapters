@@ -34,6 +34,7 @@ it cost. [RFD 0000](0000-how-to-write-an-rfd.md) describes the conventions.
 | [0009](0009-cold-tier.md) | Cold tier: offload idle actor state | nothing implemented |
 | [0012](0012-actor-indexing-and-search.md) | Indexing and search without a shared database | proposed |
 | [0013](0013-foundationdb-backup.md) | FoundationDB backup | nothing implemented, cheapest item |
+| [0017](0017-engine-bring-up.md) | Engine bring-up and runner registration | code exists, never run |
 
 ## Where to start
 

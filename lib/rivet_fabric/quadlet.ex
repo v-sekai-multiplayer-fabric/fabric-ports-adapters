@@ -17,6 +17,9 @@ defmodule RivetFabric.Quadlet do
 
   def unit_dir, do: @unit_dir
 
+  @doc "The container name for a node, which is also its DNS name on the network."
+  def container_name(app, name), do: unit_name(app, name)
+
   defp unit_name(app, name), do: "#{app}--#{name}"
   defp unit_path(app, name), do: Path.join(@unit_dir, "#{unit_name(app, name)}.container")
   defp service(app, name), do: "#{unit_name(app, name)}.service"

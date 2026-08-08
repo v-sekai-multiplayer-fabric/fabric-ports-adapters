@@ -10,7 +10,7 @@ defmodule RivetFabric.CLI do
 
   alias RivetFabric.Quadlet
   alias RivetFabric.{Bootstrap, Shell}
-  alias RivetFabric.Domain.Spec
+  alias RivetFabric.Domain.{Cluster, Spec}
 
   @assets Path.expand("../../assets", __DIR__)
 
@@ -21,6 +21,8 @@ defmodule RivetFabric.CLI do
 
     case args do
       ["fdb-up"] -> fdb_up(spec)
+      ["engine-up"] -> engine_up(spec)
+      ["runner-register"] -> runner_register(spec)
       ["fdb-status"] -> fdb_status(spec)
       ["build"] -> build_images(spec)
       ["destroy"] -> destroy(spec)
@@ -103,6 +105,40 @@ defmodule RivetFabric.CLI do
     """)
   end
 
+  defp engine_up(spec) do
+    coordinators =
+      Cluster.coordinators(
+        Enum.map(Spec.fdb_plan(spec), &elem(&1, 1)),
+        spec.fdb.port
+      )
+
+    case Bootstrap.engine(spec, engine_image(), coordinators) do
+      {:ok, body} ->
+        IO.puts(body)
+
+      {:error, reason} ->
+        IO.puts(:stderr, "engine did not come up: #{inspect(reason)}")
+        System.halt(1)
+    end
+  end
+
+  defp engine_image, do: System.get_env("ENGINE_IMAGE", "rivet-fabric/engine:latest")
+
+  defp runner_register(spec) do
+    url =
+      "http://#{RivetFabric.Quadlet.container_name(spec.godot.app, spec.godot.app)}" <>
+        ":#{spec.godot.port}#{spec.godot.base_path}"
+
+    case Bootstrap.register_runner(spec, url) do
+      {:ok, body} ->
+        IO.puts(body)
+
+      {:error, reason} ->
+        IO.puts(:stderr, "runner registration failed: #{reason}")
+        System.halt(1)
+    end
+  end
+
   defp fdb_status(spec) do
     node = hd(Spec.fdb_nodes(spec))
 
@@ -136,11 +172,13 @@ defmodule RivetFabric.CLI do
     IO.puts("""
     rivet-fabric-ports-adapters
 
-      fdb-up        bring up the FoundationDB cluster
-      fdb-status    fdbcli status minimal
-      build         build the FoundationDB image
-      destroy       tear every node down
-      doctor        check the substrate prerequisites
+      fdb-up          bring up the FoundationDB cluster
+      engine-up       bring up the Rivet engine against it
+      runner-register register the godot zone as a serverless runner
+      fdb-status      fdbcli status minimal
+      build           build the FoundationDB image
+      destroy         tear every node down
+      doctor          check the prerequisites
 
     options
       --count N     FoundationDB node count (default 3)

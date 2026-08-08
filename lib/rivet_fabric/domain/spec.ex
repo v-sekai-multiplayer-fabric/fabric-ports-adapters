@@ -37,8 +37,11 @@ defmodule RivetFabric.Domain.Spec do
       },
       engine: %{
         app: "mf-rivet-engine",
+        # Statically addressed for the same reason the FoundationDB nodes are.
+        ip: "10.89.100.20",
         port: 6420,
         peer_port: 6421,
+        admin_token: "local-dev-token",
         # The FoundationDB backend is not in upstream Rivet. It lives on this
         # branch of the fork, pinned so the build is reproducible.
         rivet_repo: "https://github.com/v-sekai-multiplayer-fabric/rivet.git",
