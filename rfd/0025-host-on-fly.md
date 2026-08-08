@@ -178,6 +178,19 @@ Memory availability - 1.8 GB per process on machine with least available
 
 Fine for a test cluster, and a measured fact rather than an inference now.
 
+### The dedicated IPv4 is priced but not allocated
+
+The bill above lists $2/month for it, and the running app does not have one:
+
+```
+v6  2a09:8280:1::164:656f:0  public ingress (dedicated)
+v4  66.241.125.245           public ingress (shared)
+```
+
+A shared v4 cannot carry UDP and IPv6 cannot carry it at all, so the QUIC
+listener would bind and never receive a packet. Worth noting because it fails
+silently rather than refusing to start.
+
 ### The engine app has no volume
 
 `flyctl volumes list --app mf-rivet-engine` is empty, so its filesystem does not

@@ -17,7 +17,21 @@ carries `rivet_unreliable=1` is served over QUIC datagrams instead of a stream,
 so the client leg becomes unreliable while everything past Guard stays
 unchanged. 19 tests pass in `rivet-guard-core`.
 
-Steps 7 and 8 are not done.
+Steps 7 and 8 are not done, and the gap is now the demo itself rather than the
+transport under it. Three things remain, in dependency order:
+
+1. **A certificate**, so a browser will connect at all. Storage and the resolver
+   are done; issuance is not. See
+   [RFD 0026](0026-terminate-tls-for-quic.md).
+2. **A dedicated IPv4 and a UDP service on Fly.** The engine's v4 is currently
+   shared, which cannot carry UDP.
+3. **The performer and viewer pages, and zone-side motion streaming.** Nothing
+   yet speaks the `u16` length plus path stream header or sets
+   `rivet_unreliable=1`, and nothing streams frames.
+
+The ShaderMotion decoder is ported to GDScript and matches the JavaScript
+reference on 40 of 40 `decode_video_float` cases, so the payload half is
+settled. What is missing is everything that would put a frame on the wire.
 
 Modelled on [RFD 0022](0022-glb-to-godot-scene.md), which keeps the asset
 conversion path and no longer describes a demo.

@@ -137,8 +137,11 @@ rather than silently disabling TLS, and the key layout.
 - **Issuance.** No certificate has been ordered. The ACME client, the
   `/.well-known/acme-challenge/` route, and the single-flight lock are not
   written.
-- **UDP end to end on Fly.** The dedicated IPv4 is not allocated and no UDP
-  service is declared.
+- **UDP end to end on Fly.** `flyctl ips list --app mf-rivet-engine` shows the
+  v4 address is **shared**, and UDP requires a dedicated one; there is also no
+  UDP service declared. So even with a certificate in place, no QUIC packet
+  would reach the listener. This is independent of issuance and can be fixed in
+  parallel.
 - **That a restart orders nothing.** This is the behaviour protecting the rate
   limit, so it deserves an explicit test rather than an assumption.
 
