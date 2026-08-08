@@ -60,5 +60,5 @@ So this is now a configuration choice rather than a missing capability.
 ## Out of scope
 
 Offload of idle state to object storage. That is
-[RFD 0009](0009-cold-tier-and-backup.md), and unlike this, it is genuinely
+[RFD 0009](0009-cold-tier.md), and unlike this, it is genuinely
 unimplemented.

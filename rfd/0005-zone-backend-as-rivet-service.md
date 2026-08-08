@@ -4,6 +4,11 @@
 
 Proposed. Nothing implemented. Was issue #1.
 
+The general mechanisms for indexing, uniqueness, listing, and cross-entity
+relations were split out into
+[RFD 0012](0012-actor-indexing-and-search.md), because they apply to any service
+built on single-writer actors. This RFD covers Uro specifically.
+
 ## Problem
 
 [zone-backend](https://github.com/v-sekai-multiplayer-fabric/zone-backend) is
@@ -63,101 +68,21 @@ database and is independently useful.
 
 ## The four things the database was doing
 
-### 1. Secondary lookup
+Uro needs all four of the mechanisms in
+[RFD 0012](0012-actor-indexing-and-search.md), and hits them at these points:
 
-Actors are addressed by key. Authentication needs `email → user id`, and
-`user_identities` needs `provider + provider_uid → user id`. Neither is the
-actor key.
+| Mechanism | Where Uro needs it |
+|---|---|
+| Lookup by non-key attribute | `email → user id` for authentication; `provider + provider_uid → user id` for `user_identities` |
+| Uniqueness | unique email and username at registration |
+| Owner-scoped lists | a user's avatars, props, backpack contents |
+| Bounded global list | public zones, for a server browser |
+| Tag search | `shared_files` by semantic tag |
+| One-sided relations | `friendships` |
 
-**Mechanism: index actors.** A singleton actor per index, owning a SQLite table
-mapping the attribute to the id. `email-index`, `identity-index`,
-`zone-name-index`.
-
-This works because these are low-volume, write-rarely, read-often. It is a
-bottleneck by construction, so it must not be used for anything high-churn. An
-index actor that is on the path of every request is a single-writer database
-with extra steps.
-
-### 2. Uniqueness
-
-Unique email, unique username. Postgres does this with a unique index; nothing
-in the actor model does it for you, and two concurrent registrations will
-both succeed.
-
-**Mechanism: the index actor owns the namespace.** Registration is a call to
-`email-index`, which either allocates or rejects, and only then creates the user
-actor. The index actor's single-writer property is exactly the serialisation
-needed. This makes registration a two-step operation that can fail between
-steps, so it needs to be idempotent and to have a sweeper for orphaned
-allocations.
-
-### 3. Cross-entity queries
-
-Uro's API lists and searches: public zones, a user's avatars, shared files by
-semantic tag. `20260720000000_create_shared_file_semantic_tags` exists precisely
-to support search. There is no cross-actor query in Rivet, so each of these
-becomes a design problem rather than a `SELECT`.
-
-- **Owner-scoped lists stay easy.** "A user's avatars" is a query inside one
-  actor if the user actor holds the list. Most per-user listing is fine.
-- **Bounded global lists are a projection actor.** "Public zones" is a
-  materialised view maintained by an actor that zones notify on status change.
-  Bounded because the zone count is bounded. Stale by construction, which is
-  fine for a server browser and not for anything transactional.
-- **Tag search shards by term, and is a better fit for actors than it looks.**
-
-#### Tag search: one actor per tag
-
-An earlier draft of this RFD said tag search "wants a real index outside the
-actor system". That was wrong under the stated constraint, since an external
-index is exactly the second stateful service being avoided. It was also
-pessimistic: an inverted index is one of the *more* natural things to shard
-across actors.
-
-Key an actor by the tag itself. `tag:forest` holds the posting list of shared
-file ids carrying that tag, in its own SQLite. Then:
-
-- **Single-tag search wakes exactly one actor** and reads one table. This is
-  cheaper than the equivalent scan against a shared table, not more expensive.
-- **Multi-tag AND** fans out to one actor per tag and intersects the posting
-  lists in the caller. Intersection cost is bounded by the smallest list, which
-  is the same optimisation a search engine makes.
-- **Writes are local.** Tagging a file writes to that tag's actor. There is no
-  global index lock, and unrelated tags do not contend.
-- **Idle tags cost nothing**, because their actors sleep. A long tail of rarely
-  used tags is free, which is the opposite of a shared index where every term
-  occupies the same structure.
-
-Where it gets hard, and these should be designed for rather than discovered:
-
-- **Hot tags.** A tag applied to a very large number of files puts a large
-  posting list behind one single-writer actor. The fix is a second level of
-  sharding, `tag:forest:0..n`, chosen when the list crosses a threshold. Deciding
-  the threshold and the resharding procedure is real work.
-- **Ranking.** Relevance scoring needs corpus-wide statistics such as document
-  frequency, which no single actor holds. Either accept unranked results with a
-  deterministic order, or maintain approximate global statistics in a small
-  projection actor and accept that they lag.
-- **Free text rather than tags.** Everything above works because tags are
-  discrete terms with exact matches. Prefix, fuzzy, or natural-language search
-  is a different problem, and SQLite FTS5 inside a single actor does not
-  generalise to a growing corpus. If the "semantic" in `semantic_tags` means
-  embeddings and nearest-neighbour rather than exact tags, this section does not
-  apply and the problem is materially harder. **Worth confirming before
-  designing anything.**
-
-### 4. Multi-entity invariants
-
-`friendships` relates two users. Accepting a friend request writes both sides,
-and there is no cross-actor transaction.
-
-**Mechanism: make it one-sided and derive the rest.** Each user actor stores its
-own outgoing edges. A friendship is mutual when both sides hold an edge, which
-is a read of two actors rather than a write to one shared table. There is a
-window where one side has accepted and the other has not recorded it; that is
-already true of the real world and of most social graphs.
-
-This is also where [ReBAC helps](#rebac-is-already-portable).
+The one that needs confirming before anything is designed: **`semantic_tags`
+must mean discrete exact tags**, not embeddings. The term-sharded index in
+RFD 0012 assumes exact matching. Vector similarity does not shard that way.
 
 ## ReBAC is already portable
 

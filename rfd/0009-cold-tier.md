@@ -1,9 +1,12 @@
-# RFD 0009 — Cold tier and backup
+# RFD 0009 — Cold tier
 
 ## Status
 
-Proposed. Nothing implemented. Was issue #7, split out of issue #4, with
-issue #3 folded in.
+Proposed. Nothing implemented. Was issue #7, split out of issue #4.
+
+Backup was split out into [RFD 0013](0013-foundationdb-backup.md). The two share
+an S3 endpoint and nothing else, and bundling them made a one-day task look like
+part of a large project.
 
 ## Goal
 
@@ -55,42 +58,21 @@ not.
   VFS and the WASM TypeScript VFS to stay 1:1. A cold-tier read path must exist
   in both or that rule breaks.
 
-## The S3 gateway: versitygw
+## Storage backend
 
-<https://github.com/versity/versitygw>, folded in from issue #3.
+Whatever S3-compatible endpoint is chosen, it is shared with
+[RFD 0013](0013-foundationdb-backup.md), which proposes versitygw. Sizing and
+durability should be decided per use rather than shared by default: backup is
+sequential, write-mostly, and off the request path, while a cold tier is
+random-access and directly on the actor wake path.
 
-It serves two purposes that should not be conflated, because their profiles are
-opposite.
-
-### 1. Backup target
-
-FoundationDB backs up to S3 natively. `fdbbackup` is present in the 7.3.76 image
-and accepts a blobstore URL directly:
-
-```
-blobstore://<api_key>:<secret>:<security_token>@<host>[:<port>]/<name>?bucket=<bucket>
-```
-
-This needs **no Rivet changes at all** and closes a gap already recorded as an
-open risk: the validated deployment had no backups configured, with the volumes
-as the only copy. It is the cheaper and more urgent of the two and can land
-independently of any cold-tier work.
-
-### 2. Cold tier target
-
-The offload path above.
-
-Backup is write-mostly, sequential, latency-tolerant, and off the request path.
-A cold tier is random-access, latency-sensitive, and directly on the actor wake
-path. One versitygw deployment can serve both, but sizing and durability should
-be decided per use rather than shared by default.
+Archival data has a further constraint from
+[RFD 0006](0006-zone-baker-as-rivet-service.md): OpenUSD masters are the last
+copy of their structure and must never be evicted somewhere unrecoverable,
+whereas derived transmission formats are regenerable and can be dropped freely.
 
 ## Tasks
 
-### Backup
-
-- [ ] Stand up versitygw as a quadlet alongside the FoundationDB nodes.
-- [ ] Configure `fdbbackup` against it and verify a **restore**, not just a
       backup.
 - [ ] Decide cadence, retention, and whether backup runs continuously or
       scheduled.

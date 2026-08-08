@@ -5,11 +5,15 @@
 Accepted. Encoded in `RivetFabric.Domain.Cluster`. Derived from a working
 deployment, **not** from a run of this repo's engine image.
 
+Serverless runner configuration was split out into
+[RFD 0010](0010-serverless-runner-configuration.md). This RFD now covers only
+the engine's own configuration file.
+
 ## Problem
 
-Several Rivet Engine configuration requirements are not discoverable from the
-source or the docs, and each one fails in a way that points somewhere else.
-Recording them as a decision keeps them from being rediscovered.
+Three Rivet Engine topology requirements are not discoverable from the source or
+the docs, and each fails in a way that points somewhere else. Recording them
+keeps them from being rediscovered.
 
 ## Constraints
 
@@ -54,18 +58,6 @@ The default is `http://127.0.0.1:6420`, which an envoy resolves inside its
 the engine itself reports healthy and serves requests normally. The symptom
 appears entirely on the runner side, which is the wrong place to look.
 
-### `drain_grace_period` must be less than `request_lifespan`
-
-`drain_grace_period` defaults to 1800s, so a serverless runner config with a
-shorter lifespan is rejected:
-
-```
-Invalid runner config: `drain_grace_period` must be less than `request_lifespan`
-(1800s >= 300s)
-```
-
-`Cluster.runner_config/2` returns `{:error, reason}` for this case rather than
-letting the API reject it, so the failure surfaces before a request is made.
 
 ## Consequences
 

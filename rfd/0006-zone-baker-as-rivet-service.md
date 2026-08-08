@@ -150,7 +150,7 @@ Consequences worth stating:
   regenerated from the archive, so losing one costs compute, not data. Only the
   archive needs durability guarantees. This is a different storage class from
   the archive itself, and lines up with the tiering in
-  [RFD 0009](0009-cold-tier-and-backup.md): archival USD must never be evicted
+  [RFD 0009](0009-cold-tier.md): archival USD must never be evicted
   to somewhere unrecoverable, while derivatives are cache-shaped and can be
   dropped freely.
 - **The converter version belongs in the derived key.** When a converter
@@ -200,6 +200,6 @@ bootstrap tool, avoids the question.
 
 Baked output is large, immutable, and read-mostly, which is object-storage
 shaped rather than FoundationDB shaped. It should go to the same class of store
-discussed in [RFD 0009](0009-cold-tier-and-backup.md), though for a different
+discussed in [RFD 0009](0009-cold-tier.md), though for a different
 reason: cold-tier offload is about evicting cold state, whereas baked assets are
 born cold-tier.

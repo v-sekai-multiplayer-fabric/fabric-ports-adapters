@@ -4,11 +4,15 @@
 
 Accepted. Pinned in `RivetFabric.Domain.Spec`.
 
+Godot runtime provenance was split out into
+[RFD 0011](0011-godot-runtime-provenance.md), because its failure mode is
+different: an upstream substitute builds and runs, and only desynchronises
+later.
+
 ## Problem
 
-Three of the images this cluster needs cannot be taken from their obvious
-upstream source, and two pairs of versions are coupled in ways that fail late
-and confusingly if they drift.
+The Rivet engine cannot be taken from upstream, and its FoundationDB client is
+coupled to the cluster's server version in a way that fails late if it drifts.
 
 ## Decisions
 
@@ -42,31 +46,6 @@ The crate also expects `fdb.options` under `/usr/include/foundationdb`, which
 the runtime-only package does not ship. The `embedded-fdb-include` feature
 vendors it.
 
-### Godot comes from the fork's build, not godotengine.org
-
-The zone image is based on
-`ghcr.io/v-sekai-multiplayer-fabric/zone-godot-runtime`, built by
-[v-sekai-multiplayer-fabric/godot-images](https://github.com/v-sekai-multiplayer-fabric/godot-images).
-
-That build is **double-precision**
-(`godot.linuxbsd.template_release.double.x86_64`). It is not interchangeable
-with an upstream release: mixing precisions breaks networked state between the
-zone and its clients. An earlier revision of this repo substituted an upstream
-`Godot_v4.7.1-stable_linux.x86_64` download, which builds and runs fine and
-would have failed later as desync rather than as a build error.
-
-The package is private. Building the zone image therefore needs either
-
-```sh
-podman login ghcr.io
-```
-
-or a local build from `godot-images`, which ships quadlet `.build` units for
-exactly this:
-
-```sh
-systemctl --user start zone-godot-runtime-build
-```
 
 ### Images are fully qualified
 
@@ -82,3 +61,6 @@ Rust from source and are built deliberately rather than as part of bootstrap.
 
 Neither has been built or run under this repo. The engine-side knowledge in
 [RFD 0003](0003-engine-configuration.md) comes from a deployment elsewhere.
+
+The driver being pinned here is described in
+[RFD 0014](0014-foundationdb-driver.md).
