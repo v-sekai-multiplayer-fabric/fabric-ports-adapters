@@ -146,7 +146,15 @@ The alternatives are worth naming as rejected, because both look reasonable:
 
 ## Open questions
 
-- [ ] Hot-tag threshold and resharding procedure.
+- [ ] **Hot-tag threshold: derive it from measurement, not from the limits.**
+      A number could be computed from the documented ceilings (128 KiB per KV
+      value, 976 KiB per put payload) but that gives the point where a posting
+      list stops *fitting*, which is not the point where a single-writer actor
+      stops *keeping up*. The latter is what matters and only measurement finds
+      it. Measure: write throughput against posting-list size, read latency for
+      a single-tag query as the list grows, and intersection cost for
+      multi-tag AND. Shard where the curve bends, not where the value overflows.
+- [ ] Resharding procedure, once the threshold is known.
 - [ ] Is unranked deterministic ordering acceptable, or is relevance required?
 - [ ] Does any relation in the system need genuine two-sided atomicity? If so,
       this RFD does not cover it.

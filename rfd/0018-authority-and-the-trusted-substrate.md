@@ -247,9 +247,15 @@ the outage the gossip would be protecting against.
 
 ## Open questions
 
-- [ ] Confirm that actors have no disconnected mode. The conclusion above is
-      drawn from silence plus the timeout table, not from a positive statement,
-      and it is load-bearing for keeping the range map in actor state.
+- [ ] **Test it: partition a local cluster and observe.** The conclusion above
+      is drawn from silence plus the timeout table, and it is load-bearing for
+      keeping the range map in actor state, so it should be a fact rather than
+      an inference. The quadlet setup can sever the engine from a zone with
+      `podman network disconnect` and watch what an actor does. What to record:
+      how long before connections close, whether writes made during the
+      partition survive, whether the actor is rescheduled elsewhere, and whether
+      anything is served while the engine is unreachable. Same class of work as
+      [RFD 0019](0019-large-value-conformance.md).
 - [x] **Answered: actor KV chunks at 10 KB**, sized for FoundationDB
       explicitly (`VALUE_CHUNK_SIZE`), so a 128 KiB value is ~13 chunks and the
       naive failure does not occur. What remains untested is the driver at those
