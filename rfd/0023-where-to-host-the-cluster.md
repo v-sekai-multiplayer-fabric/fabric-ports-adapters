@@ -21,6 +21,30 @@ Not guessed. These come from the cluster that actually ran.
 So roughly **16–24 GB RAM, ~100 GB disk, one public IP**, plus somewhere else
 entirely for backups.
 
+### What RFD 0024 adds
+
+[RFD 0024](0024-prove-webtransport-with-shadermotion.md) proposes a WebTransport
+experiment, and it changes three things that were not priced before.
+
+**Inbound UDP is now mandatory.** HTTP/3 is QUIC over UDP, so a host that only
+routes TCP cannot run the experiment at all. On rented VMs this is free and
+uninteresting. On Fly it is neither: UDP requires a **dedicated IPv4 at
+$2/month**, does not work over public IPv6, must bind the special
+`fly-global-services` address, and must use the same port externally that it
+binds internally. That last point is convenient rather than awkward, because
+[RFD 0007](0007-webtransport-in-guard.md) step 6 already plans to reuse
+`https.port` over UDP and Fly does not rewrite UDP ports.
+
+**Egress stops being a rounding error.** The experiment streams a 100 MB VRM per
+run and repeats it, once per transport, many times. Bandwidth moves from a
+footnote to a line item, and it is the column where the options differ most.
+
+**Impairment needs `NET_ADMIN`, but probably not on the host.** `tc netem` needs
+the capability wherever it runs, and the natural place to run it is the test
+client rather than the server. Impairing the viewer's own downlink is both more
+faithful to the scenario and outside the hosting decision entirely. This is
+called out so nobody buys a privileged host for it.
+
 ## The tension that decides this
 
 `double` redundancy tolerates losing one machine. That is the property
@@ -93,6 +117,33 @@ three-node cluster there, and the engine and zone Containerfiles were written
 for it. It is not the cheapest, but it is the only option on this page where the
 deployment path has been executed rather than described.
 
+## Egress, which RFD 0024 promotes to a real cost
+
+Rates differ by more than an order of magnitude, and the workload is now bulk
+transfer rather than a control plane.
+
+| Option | Included | Overage | 100 GB/month | 1 TB/month |
+|---|---|---|---|---|
+| Hetzner AX41 | 20 TB | ~€1/TB | included | included |
+| Contabo VPS | 32 TB | — | included | included |
+| DigitalOcean | 1 TB+ per droplet | $0.01/GB | included | included |
+| Fly.io | none | $0.02/GB | $2.00 | $20.00 |
+| Google, Standard Tier | 200 GiB/account | $0.085/GB | included | ~$70 |
+| Google, Premium Tier | **1 GiB/month** | **$0.12/GB** | **$11.88** | **$119.88** |
+
+Google's default is Premium, and Premium includes one gibibyte. Reports in 2026
+describe GCP as having doubled egress rates. At a terabyte that single line is
+**larger than the compute bill**, taking Google from ~$52 to ~$172 and making it
+the most expensive option here rather than the mid-priced one.
+
+Standard Tier fixes most of it and is a deliberate choice that has to be made
+per resource. It routes over the public internet instead of Google's backbone,
+which for a latency experiment is a trade worth thinking about rather than a
+free win.
+
+Bare-metal and VPS options simply do not have this problem. 20 to 32 TB included
+means the experiment never reaches the meter.
+
 ## Options
 
 ### A. One Hetzner AX41, everything containerised — ~€49/month
@@ -139,7 +190,8 @@ at 2 GB is ~$1.54 + $10.00 = **~$11.54/machine**.
 | 1 × engine, `min_machines_running = 1` | `engine/fly.toml` | $11.54 |
 | Zone, `min_machines_running = 0`, `auto_stop = "suspend"` | `godot-zone/fly.toml` | ~$0 idle |
 | 3 × 10 GB volumes at $0.15/GB | `initial_size` | $4.50 |
-| **Always-on total** | | **~$50.66** |
+| Dedicated IPv4, required for UDP | RFD 0024 | $2.00 |
+| **Always-on total** | | **~$52.66** |
 
 Egress is extra at $0.02/GB in North America and Europe.
 
@@ -219,7 +271,9 @@ closely enough.
 | 3 × `e2-small` FoundationDB | $12.23 | $36.69 |
 | 1 × `e2-small` engine | $12.23 | $12.23 |
 | 30 GB `pd-balanced` | $0.10/GiB | $3.00 |
-| **On-demand total** | | **~$51.92** |
+| Egress at 1 TB, Premium Tier | default | $119.88 |
+| **On-demand total, control plane only** | | **~$51.92** |
+| **With 1 TB of demo traffic** | | **~$171.80** |
 
 That lands within a dollar of Fly, which is a coincidence worth noticing: two
 very different billing models converge because both are really charging ~$5–6
@@ -283,16 +337,22 @@ having, and benchmark FoundationDB on Contabo first.
 all three existing accounts are priced against the same shape, they separate
 cleanly:
 
-| Existing account | Monthly | Config written? | Zone scales to zero? |
-|---|---|---|---|
-| Fly.io | ~$51 | yes, and it ran | yes |
-| Google Compute | ~$52 (~$34 committed) | no | no |
-| DigitalOcean | ~$162 | no | no |
+| Existing account | Control plane | With 1 TB demo traffic | UDP ready? | Config written? |
+|---|---|---|---|---|
+| Fly.io | ~$53 | ~$73 | dedicated IPv4, $2 | yes, and it ran |
+| Google Compute | ~$52 | **~$172** | yes | no |
+| DigitalOcean | ~$162 | ~$162, included | yes | no |
 
-Fly and Google cost the same to within a dollar, so the tiebreaks are that Fly's
-deployment already exists and has been executed, and that its zone bills nothing
-while idle. Google's committed-use discount is the cheaper number, but it buys a
-year of certainty about a stack that has not run yet.
+Egress reorders these once RFD 0024 runs. At the control plane alone Fly and
+Google are within a dollar; at a terabyte Google is the most expensive option on
+the page and DigitalOcean, whose included transfer absorbs the whole experiment,
+stops looking absurd.
+
+Fly still wins among the three: its deployment already exists and has been
+executed, its zone bills nothing while idle, and $20 per terabyte is the second
+cheapest metered rate here. Google's committed-use discount is the cheaper
+compute number, but it buys a year of certainty about a stack that has not run
+yet, and Premium Tier egress gives back more than the discount saves.
 
 DigitalOcean is 3x either of them for compute, and Tigris removes the reason to
 use it for storage too. Its earlier framing here as the incumbent-account option
@@ -304,8 +364,10 @@ one.
 - **No benchmarks.** Every option is priced on RAM and core count, and
   FoundationDB is sensitive to disk latency and network jitter, neither of which
   appears in a price table.
-- **Bandwidth.** A 100 MB conversion moves ~230 MB across the wire in base64.
-  Contabo advertises 32 TB; the others are not compared here.
+- **How much traffic the experiment actually generates.** The 100 GB and 1 TB
+  columns are illustrative brackets, not a measurement. A 100 MB conversion
+  moves ~230 MB across the wire in base64, and RFD 0024 repeats transfers per
+  transport, but nobody has counted the runs.
 - **Prices move.** Hetzner changed three times in 2026. This is a snapshot.
 - **Nothing is deployed to any of these right now.** The Fly cluster did run
   and was verified, then was destroyed to stop billing. Its configuration is
@@ -315,6 +377,9 @@ one.
 
 - [ ] Does FoundationDB perform acceptably on Contabo, given the variability
       reports? That decides whether option B is real.
+- [ ] Does Google Standard Tier networking distort the latency measurement? It
+      avoids the egress bill by leaving the backbone, which is exactly the
+      variable RFD 0024 is measuring.
 - [ ] Does `fdbserver` start and hold a coordinator quorum in 256 MB? If it
       does, the free allowance can host the role that must not move. Testable on
       the quadlet rig for nothing.
