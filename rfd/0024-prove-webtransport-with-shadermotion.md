@@ -4,11 +4,14 @@
 
 Proposed. Nothing here is implemented, and nothing is measured.
 
-Steps 1 through 4 of [RFD 0007](0007-webtransport-in-guard.md) are done and
-compile under `cargo check -p rivet-guard-core`. Steps 5 through 8 are not:
-`serve_custom_websocket` has no call sites and neither does `run_h3_listener`,
-so the QUIC listener is built and unreachable. `pegboard-gateway` contains no
-datagram concept at all.
+Steps 1 through 6 of [RFD 0007](0007-webtransport-in-guard.md) are done. Steps 5
+and 6 landed on the `webtransport-datagrams` branch: `serve_custom_websocket` is
+extracted so any transport can drive a custom-serve handler,
+`ProxyServiceFactory::serve_webtransport` resolves a route from the CONNECT
+request, and `run_h3_listener` is bound on the HTTPS port over UDP. The QUIC
+listener is reachable rather than merely compiled.
+
+Steps 7 and 8 are not done, and neither is the tunnel work below.
 
 Modelled on [RFD 0022](0022-glb-to-godot-scene.md), which keeps the asset
 conversion path and no longer describes a demo.
@@ -277,23 +280,43 @@ The only figures it leans on come from
 QUIC is not the blocker. `h3_server.rs` already calls `.enable_datagram(true)`,
 and `WebTransportSession` exposes `datagram_reader` and `datagram_sender`.
 
-The tunnel is. `pegboard-gateway` carries traffic over `universalpubsub` in a
-WebSocket shape both directions, `tunnel_to_ws_task.rs` and
-`ws_to_tunnel_task.rs`, with no datagram concept. A datagram arriving at Guard
-has nowhere to go.
+The tunnel is, but less than first described, and the correction is worth
+recording because it changes the cost.
+
+**The transport underneath is already at-most-once.** `universalpubsub` has
+memory, NATS, and postgres drivers, and there is no JetStream anywhere in the
+package. NATS core does not retransmit, so nothing at that layer has to be
+persuaded to drop.
+
+**The reliability lives above it.** The tunnel adds its own acknowledgement
+layer for hibernation: `ToServerWebSocketMessageAck` in the v7 schema, tracked
+in `shared_state.rs` as `WebSocketMessageNotAcked` against
+`gateway_hws_message_ack_timeout_ms`. That is what makes a WebSocket message
+survive an actor hibernating, and it is what a datagram must bypass.
+
+So the work is to add a message kind that is deliberately excluded from ack
+tracking, not to build a new delivery mode through a broker that refuses to drop
+things. The broker already drops things.
+
+Two further facts for whoever picks this up. The protocol is versioned BARE at
+`PROTOCOL_MK2_VERSION = 7`, so a new kind means a `v8.bare` schema with
+field-by-field converters and a matching bump of the TypeScript
+`PROTOCOL_VERSION`, per the repository's own rule against editing a published
+schema. And `guard` depends on **both** `pegboard-gateway` and
+`pegboard-gateway2`, so check which one carries a given deployment before
+changing either.
 
 The work, in order:
 
-1. Steps 5 and 6 of [RFD 0007](0007-webtransport-in-guard.md). Nothing reaches
-   an actor over QUIC until the listener is bound and routed, whatever the
-   payload.
-2. Stream demultiplexing so one session reaches both zones, and a datagram frame
-   in the tunnel with a path that is allowed to drop.
+1. ~~Steps 5 and 6 of [RFD 0007](0007-webtransport-in-guard.md).~~ Done. The
+   listener is bound and WebTransport streams route to actors.
+2. A `v8.bare` datagram kind excluded from ack tracking, plus stream
+   demultiplexing so one session reaches both zones.
 3. The `MotionDecoder.js` port, and wiring it to `godot-humanoid`.
 4. The measurement.
 
-Step 2 is where the cost is. It is not a port of existing plumbing, it is a new
-delivery mode through a broker that currently guarantees the opposite.
+Step 2 is still the largest piece, mostly because a protocol version bump has to
+be done properly rather than because the broker fights it.
 
 ## Deferred
 
