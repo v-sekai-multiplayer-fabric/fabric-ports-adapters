@@ -153,8 +153,44 @@ The rest is expensive: ~$51 buys 8 GB across four machines, which is roughly
 what one AX41 costs with 64 GB.
 
 **On the free allowance.** The legacy Hobby allowance is three `shared-cpu-1x`
-**256 MB** VMs plus 3 GB of volume. FoundationDB will not run in 256 MB, so the
-allowance cannot host this cluster. It offsets the bill rather than covering it.
+**256 MB** VMs plus 3 GB of volume. It is wrong to price this as a flat discount:
+the question is which roles fit, and two of them do.
+
+A FoundationDB *coordinator* is not a data node. Upstream describes coordinators
+as "communicating and storing a small amount of shared state", with the
+performance impact of acting as one "negligible". The 4 GB per-process guidance
+is for storage and log roles. Three coordinators at 256 MB with 1 GB of volume
+each is exactly the free allowance, and `foundationdb/fly.toml` already exposes
+`FDB_CLASS`, so this is configuration rather than new code.
+
+The second fit is the backup agent from
+[RFD 0013](0013-foundationdb-backup.md). It streams mutations to a blobstore and
+holds no database state.
+
+**What this saves is not mainly money.** Coordinators were already riding along
+on the data nodes for free, so moving them off saves nothing directly; the
+backup agent saves one machine, ~$11.54, only if it would otherwise get a
+dedicated one. The real gain is stability, and `foundationdb/fly.toml` says why
+in its own comment: "a suspended coordinator takes the cluster down", and
+"coordinators are addressed by IP, so machine count and identity are load
+bearing". That constraint is the entire subject of
+[RFD 0002](0002-allocate-addresses.md).
+
+Coordinators on three machines that never resize and never get recreated make
+the data nodes ordinary again. They can be resized, restarted, or replaced
+without touching the quorum that RFD 0002 had to allocate static addresses to
+protect. The free tier stops being a discount and becomes a place to put the
+role that must not move.
+
+**Unverified, and cheap to verify.** No source states that `fdbserver` starts in
+256 MB, only that the coordination state is small; `fdbserver` also defaults to
+an 8 GiB memory *limit*, which is a cap rather than a reservation. The quadlet
+rig exists precisely to answer this without paying anyone, so this should be
+tested locally before being relied on.
+
+Fly's current docs say plainly that "current customers use pay-as-you-go pricing
+with no included monthly credits", so whether the allowance applies at all is
+account-specific and settled by an invoice, not the rate card.
 
 Fly's current docs say plainly that "current customers use pay-as-you-go pricing
 with no included monthly credits", and no $15/month credit appears in any
@@ -214,10 +250,22 @@ side: the pricing model either matches the actor lifecycle or it does not.
 
 **Split the decision, because the two halves have different answers.**
 
-**Backups: DigitalOcean Spaces, now.** Existing account, S3-compatible,
-satisfies [RFD 0013](0013-foundationdb-backup.md) with no new vendor and no
-gateway to run. It is cheap, it is the only item here that protects data that
-exists, and there is no reason to wait for the compute decision.
+**Backups: Tigris, now.** Fly's own object storage is S3-compatible, which is
+all [RFD 0013](0013-foundationdb-backup.md) requires, and it beats DigitalOcean
+Spaces on both axes that matter here:
+
+| | Tigris | DO Spaces |
+|---|---|---|
+| Storage | $0.02/GB, first 5 GB free | $5/month minimum for 250 GB |
+| Egress | none charged | metered beyond 1 TB |
+| Account | same as compute | separate |
+
+Spaces bills a $5 floor whether the backup is 2 GB or 200 GB. More importantly
+Tigris charges nothing for egress, and the one time a backup is read in full is
+a restore, which is the worst possible moment to meter bandwidth.
+
+Prefer Tigris. It is the only item here that protects data that already exists,
+and it does not depend on the compute decision.
 
 **Compute: option A for now, option B when fault tolerance is required.**
 
@@ -246,9 +294,10 @@ deployment already exists and has been executed, and that its zone bills nothing
 while idle. Google's committed-use discount is the cheaper number, but it buys a
 year of certainty about a stack that has not run yet.
 
-DigitalOcean is 3x either of them for compute and should be used for Spaces
-only. Its earlier framing here as the incumbent-account option was wrong: it is
-the most expensive account already held, not the convenient one.
+DigitalOcean is 3x either of them for compute, and Tigris removes the reason to
+use it for storage too. Its earlier framing here as the incumbent-account option
+was wrong: it is the most expensive account already held, not the convenient
+one.
 
 ## What this does not account for
 
@@ -266,6 +315,9 @@ the most expensive account already held, not the convenient one.
 
 - [ ] Does FoundationDB perform acceptably on Contabo, given the variability
       reports? That decides whether option B is real.
+- [ ] Does `fdbserver` start and hold a coordinator quorum in 256 MB? If it
+      does, the free allowance can host the role that must not move. Testable on
+      the quadlet rig for nothing.
 - [ ] Does the Fly account carry a monthly credit? Published plans show none,
       and the legacy allowance is too small to run FoundationDB. An invoice
       settles it; the rate card does not.
