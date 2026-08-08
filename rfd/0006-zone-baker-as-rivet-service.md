@@ -6,8 +6,21 @@ Proposed. Nothing implemented. Was issue #2.
 
 ## Problem
 
-A service that converts arbitrary asset formats to OpenUSD and stores the result
-in a casync-backed CDN, running as a Rivet service reached over WebSocket.
+A **bidirectional** asset conversion service, running as a Rivet service reached
+over WebSocket, storing output in a casync-backed CDN.
+
+Four directions, with OpenUSD as the interchange hub:
+
+| From | To |
+|---|---|
+| OpenUSD | `.tscn` (Godot scene) |
+| `.tscn` | OpenUSD |
+| any | OpenUSD |
+| OpenUSD | any |
+
+The hub-and-spoke shape is the point. Supporting *n* formats pairwise is
+*n²* converters; routing everything through USD is *2n*. It also means the CDN
+holds one canonical representation rather than every pairing.
 
 The named converter is
 [fabric-flow-adapters](https://github.com/v-sekai-multiplayer-fabric/fabric-flow-adapters).
@@ -32,30 +45,34 @@ So unlike zone-backend, the actor model is a reason to do this, not an obstacle.
 `container-runner` hosts a child process per actor and proxies tunnelled
 traffic to it. A baker child would:
 
-1. accept a bake request over the WebSocket surface,
+1. accept a request naming a source and a target format,
 2. fetch the source asset,
-3. convert to OpenUSD,
+3. convert, routing through OpenUSD as the hub,
 4. write to casync-aria-storage,
 5. report the content address back.
 
+Because conversion is bidirectional, the request has to carry a direction. That
+makes the natural actor key `(source content address, target format)` rather
+than the asset alone, which matters for the deduplication argument above: two
+requests for the same asset in *different* formats are different work and should
+not share an actor.
+
 ## Open questions
 
-- [ ] **The named converter appears to run the other way.** This needs
-      resolving before anything else, because it changes what the service is.
+- [ ] **The export direction has no named implementation.**
+      `fabric-flow-adapters` is IDTX Flow, whose README describes importing USD
+      *into* Godot via `UsdStageNode3D`, `UsdMeshInstanceNode3D`,
+      `UsdSkeletonNode3D` and similar. That covers **USD to `.tscn`**, one of
+      the four directions.
 
-      `fabric-flow-adapters` is IDTX Flow, a Godot C++ plugin whose README
-      states it "enables the import of Universal Scene Description (USD) files
-      into Godot". Its nodes are `UsdStageNode3D`, `UsdMeshInstanceNode3D`,
-      `UsdSkeletonNode3D` and so on, which build a Godot scene tree *from* a USD
-      stage. That is USD to Godot.
-
-      The requirement here is "converts any to openusd", which is the opposite
-      direction. Either the requirement is worded loosely and the baker is
-      really a USD-to-Godot importer, or a second tool is needed for the export
-      side and has not been named.
-- [ ] **Where does the actor boundary sit?** One actor per bake, or one
-      long-lived actor per asset that re-bakes on change? The former is simpler;
-      the latter caches.
+      **`.tscn` to USD** and **any to USD** are the other half of the
+      requirement and are not covered by that plugin. Either it gains an export
+      path, or a second tool is needed. This should be settled early, because it
+      decides whether the baker is one process or two.
+- [ ] **Where does the actor boundary sit?** One actor per conversion, or one
+      long-lived actor per asset that re-converts on change? The former is
+      simpler; the latter caches. Either way the key needs the target format,
+      per the note above.
 - [ ] **Job duration versus `request_lifespan`.** A serverless runner config has
       a `request_lifespan`, and `drain_grace_period` must be strictly less than
       it ([RFD 0003](0003-engine-configuration.md)). A bake that outlives the
@@ -68,9 +85,36 @@ traffic to it. A baker child would:
 - [ ] **Is WebSocket the right surface for a job queue?** A long-running bake
       over a held WebSocket ties job liveness to connection liveness. Submitting
       over HTTP and streaming progress over WebSocket may fit better.
-- [ ] **Idempotency.** If bakes are content-addressed, a repeat request should
-      return the existing address rather than re-baking. That interacts with the
-      actor-key choice above.
+- [ ] **Idempotency.** If output is content-addressed, a repeat request should
+      return the existing address rather than re-converting. That interacts with
+      the actor-key choice above, and with round-trip fidelity: a
+      USD-to-`.tscn`-to-USD result is not the same object as the original, so it
+      must not collide with it in the CDN.
+
+## Round-trip fidelity is the hard part
+
+Bidirectional conversion through a hub raises a problem one-way conversion does
+not: USD to `.tscn` to USD should ideally return something equivalent to the
+input, and naively it will not.
+
+USD carries composition that Godot's scene format has no representation for:
+sublayers, references, payloads, variant sets, and the `over` specs that IDTX
+Flow's own README describes being used for pseudo-instancing. Importing composes
+and flattens that structure into concrete nodes. Exporting from the flattened
+result cannot reconstruct what was composed away, so a round trip silently
+degrades a layered stage into a flat one.
+
+Decisions this forces:
+
+- **Is round-tripping a requirement or a side effect?** If assets originate as
+  USD and Godot is only a consumer, flattening is fine. If artists edit in
+  Godot and export back, it is not.
+- **Does the baker preserve provenance?** Retaining the source stage alongside
+  the converted output makes a lossy round trip recoverable, at storage cost.
+  Content-addressed storage makes this cheap.
+- **What is the equivalence test?** "Converted correctly" needs a definition
+  before it can be verified, and geometry comparison is not the same as
+  structural comparison.
 
 ## If the converter is IDTX Flow, the baker is a headless Godot process
 
