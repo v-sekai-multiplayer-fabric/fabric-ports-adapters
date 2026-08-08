@@ -1,4 +1,4 @@
-# fabric-ports-adapters
+# fabric-quickstart
 
 Recreate a FoundationDB-backed Rivet cluster locally on **podman + systemd
 quadlets**.

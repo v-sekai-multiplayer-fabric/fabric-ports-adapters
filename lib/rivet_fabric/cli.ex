@@ -170,7 +170,7 @@ defmodule RivetFabric.CLI do
 
   defp usage do
     IO.puts("""
-    rivet-fabric-ports-adapters
+    fabric-quickstart
 
       fdb-up          bring up the FoundationDB cluster
       engine-up       bring up the Rivet engine against it
