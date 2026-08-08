@@ -10,8 +10,14 @@ outward.
 
 ## Problem
 
-Convert a 100 MB glb or vrm into a Godot scene, from a client, without adding
-storage, a transport, or a second container.
+Convert a 100 MB glb into a Godot scene, from a client, without adding storage,
+a transport, or a second container.
+
+**glb only.** `.gltf` is excluded on purpose rather than for simplicity: it is
+the JSON variant and references external `.bin` buffers and texture files, which
+a single-file upload cannot carry. `.glb` is self-contained, so it is the only
+form of glTF this path can accept correctly. vrm is deferred; see
+[Deferred](#deferred).
 
 100 MB fits nowhere in one piece. Rivet caps an incoming message at 32 MiB and a
 request body at 20 MiB, and MCP is JSON-RPC so binary must be base64, which
@@ -203,16 +209,21 @@ containing nothing.
   gateway did work, not from a run of this path.
 - **100 MB itself.** 43 MB is measured; the remainder is extrapolation. Time
   looks linear, memory should stay flat because conversion is a child.
-- **vrm specifically.** vrm is glTF plus humanoid and spring-bone extensions.
-  `GLTFDocument` will read the glTF; whether the extensions survive into the
-  Godot scene is untested and depends on the addon set in the runtime.
 - **The fork's double-precision runtime.** Testing used the upstream Godot in
   `godot-zone-test`. See [RFD 0011](0011-godot-runtime-provenance.md): precision
   is a compile-time property and mixing it desynchronises rather than failing.
 
+## Deferred
+
+**vrm.** A vrm is glTF plus humanoid and spring-bone extensions, so
+`GLTFDocument` would read the geometry, but whether the rig and spring bones
+survive into the Godot scene depends on the addon set in the runtime and is
+untested. Nothing in the pipeline is glb-specific, so adding vrm is a question
+about extension fidelity rather than about transport or conversion. It should be
+picked up when there is a vrm that needs converting, not before.
+
 ## Open questions
 
-- [ ] Does a vrm keep its humanoid rig and spring bones through this path?
 - [ ] Should converted output be cached by content hash, so the same glb is not
       converted twice?
 - [ ] What cleans up `/tmp/zone-assets` when a conversion is abandoned?
