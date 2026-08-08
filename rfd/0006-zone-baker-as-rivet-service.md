@@ -9,6 +9,9 @@ Proposed. Nothing implemented. Was issue #2.
 A service that converts arbitrary asset formats to OpenUSD and stores the result
 in a casync-backed CDN, running as a Rivet service reached over WebSocket.
 
+The named converter is
+[fabric-flow-adapters](https://github.com/v-sekai-multiplayer-fabric/fabric-flow-adapters).
+
 ## Why this fits the actor model better than [RFD 0005](0005-zone-backend-as-rivet-service.md)
 
 Baking is a **job**, not a server. It has a natural key (the asset being baked),
@@ -37,9 +40,19 @@ traffic to it. A baker child would:
 
 ## Open questions
 
-- [ ] **Which converter?** "Converts any to openusd" is the requirement; the
-      implementation is unspecified. Candidates differ wildly in licence,
-      footprint, and format coverage.
+- [ ] **The named converter appears to run the other way.** This needs
+      resolving before anything else, because it changes what the service is.
+
+      `fabric-flow-adapters` is IDTX Flow, a Godot C++ plugin whose README
+      states it "enables the import of Universal Scene Description (USD) files
+      into Godot". Its nodes are `UsdStageNode3D`, `UsdMeshInstanceNode3D`,
+      `UsdSkeletonNode3D` and so on, which build a Godot scene tree *from* a USD
+      stage. That is USD to Godot.
+
+      The requirement here is "converts any to openusd", which is the opposite
+      direction. Either the requirement is worded loosely and the baker is
+      really a USD-to-Godot importer, or a second tool is needed for the export
+      side and has not been named.
 - [ ] **Where does the actor boundary sit?** One actor per bake, or one
       long-lived actor per asset that re-bakes on change? The former is simpler;
       the latter caches.
@@ -58,6 +71,22 @@ traffic to it. A baker child would:
 - [ ] **Idempotency.** If bakes are content-addressed, a repeat request should
       return the existing address rather than re-baking. That interacts with the
       actor-key choice above.
+
+## If the converter is IDTX Flow, the baker is a headless Godot process
+
+IDTX Flow is a Godot plugin. It needs Godot 4.5+ and is installed into a
+project's `addons/` folder, so anything driving it runs inside Godot rather
+than as a standalone binary.
+
+That is convenient here. `assets/godot_zone/` already builds a headless Godot
+image with `container-runner` as its entrypoint and an addon copied into
+`/opt/zone/addons/`, which is exactly the shape a baker needs. The baker would
+be the same image with a different addon and a different script, so the two
+share their base and their readiness contract.
+
+It also means the baker inherits the constraint in
+[RFD 0004](0004-image-provenance.md): the runtime must be the fork's
+double-precision build, not an upstream release.
 
 ## Relationship to storage
 
