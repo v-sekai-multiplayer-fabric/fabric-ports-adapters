@@ -98,59 +98,67 @@ high-value; the frequent operations are neither:
 A trade contract is worth two hops and a recovery obligation. A position update
 is not, and never has to pay for the existence of trades.
 
-### Declared where? Nowhere: opt in per read
+### Detection is free, so nothing needs declaring
 
-Three places the opt-in could live, from least to most flexible:
+Two earlier drafts of this section worried about where to declare transactional
+state, and then designed a per-read opt-in to avoid taxing hot reads. Reading
+the code retires both: **an actor KV get is already a range read that dispatches
+on subkey type.**
 
-| Granularity | Cost falls on | Problem |
-|---|---|---|
-| Per actor type | every key in every actor of that type | coarsest; a trade-capable actor taxes its own position updates |
-| Per key prefix | keys under that prefix | requires deciding up front which state will ever be transactional |
-| **Per read** | only the read that asks | none of the above |
+The key layout already puts several subkeys under one user key:
 
-Per-read is the actor-native answer, and it works because of a property of
-intents that the other two obscure: **an uncommitted intent is not supposed to
-be visible.** A reader that ignores intents and point-reads the key gets the
-last committed value, which is exactly what it should see.
+```
+EntryBaseKey       = (KeyWrapper)
+EntryValueChunkKey = (KeyWrapper, DATA, chunk)
+EntryMetadataKey   = (KeyWrapper, METADATA)
+```
 
-So the intent check is not a correctness requirement on every read. It is a
-requirement only for readers that need to observe in-flight state, and those are
-the same readers that care about linearizability.
+and the read path in `actor_kv/mod.rs` walks the range, sorting entries by which
+subkey they are:
 
-Concretely, two read modes on the same key, chosen at the call site:
+```rust
+if let Ok(chunk_key) = tx.unpack::<keys::actor_kv::EntryValueChunkKey>(&entry.key()) {
+    current_entry.append_chunk(chunk_key.chunk, entry.value());
+} else if let Ok(metadata_key) = tx.unpack::<keys::actor_kv::EntryMetadataKey>(&entry.key()) {
+    current_entry.append_metadata(metadata_key.deserialize(entry.value())?);
+} else {
+    bail!("unexpected sub key");
+}
+```
 
-- **Point read**, unchanged from today. Returns the last resolved value. Cheap,
-  and what a tick-rate position read uses.
-- **Resolving read**, a range read over the key and its adjacent intent slot in
-  one operation. If an intent is present, consult the record actor and resolve.
-  What a trade uses.
+An intent is a third discriminator, `(KeyWrapper, INTENT)`. The range read
+already covers it, so it arrives in the same operation that fetched the value.
 
-No declaration, no schema change, no key set fixed in advance. Any key can carry
-an intent; only readers who ask will look.
+| Step | Cost |
+|---|---|
+| Notice an intent | one more branch, on bytes already read |
+| Resolve it | one hop to the record actor, **only if an intent is present** |
 
-### The honest catch
+So there is no cheap-versus-correct choice to make. Every read is linearizable,
+the conditional cost is conditional on an in-flight transaction existing on that
+exact key, and nothing pays for the existence of trades. The "last resolved
+value" weakening an earlier draft was ready to accept is unnecessary and should
+not be built.
 
-A point read is not linearizable, and the failure is narrow but real: after a
-transaction commits but before its intent is resolved, the key still holds the
-old value. A point reader in that window sees stale data.
+### The compatibility cost this does carry
 
-That window is bounded by resolution, which the committer does immediately and a
-preventer does on recovery. It is nonetheless a genuine weakening, so the two
-modes must be named for what they are rather than presented as a performance
-knob. "Fast read" would be a lie; "last resolved value" is the truth.
+The dispatch ends in:
 
-This is the same trade CockroachDB makes with follower reads, and the same one
-[RFD 0018](0018-authority-and-the-trusted-substrate.md) records between the
-control and data planes: the data plane already tolerates staleness by design,
-so it is the natural user of the cheap mode.
+```rust
+} else {
+    bail!("unexpected sub key");
+}
+```
 
-Rarity also makes the unattractive parts cheap:
+An engine that does not know about `INTENT` **hard-errors** when it reads
+storage written by one that does. Adding a subkey is therefore a
+forward-compatibility break rather than an additive change, and needs the usual
+versioned rollout rather than a flag flip.
 
-- **Recovery** must still be implemented, since liveness depends on preventers
-  existing. But stranded intents are rare by construction, so a sweeper can run
-  infrequently and a slow one is acceptable.
-- **The second hop** happens only when a read races an in-flight transaction on
-  the same key, which for rare transactions is rare squared.
+Adjacent and worth fixing in the same change: `EntryMetadataKey` carries
+`// TODO: this is mistakenly not versioned. Transition to vbare so future`
+changes are safe. The versioning gap is already there, in the same key family
+this work extends.
 
 **It is a library, not a protocol change.** Intents and records are ordinary
 actor state, so this can be built and tested without touching the engine. That
@@ -314,9 +322,11 @@ not wanted.
       need a sweeper.
 - [ ] Does an intent block a read, or can a reader see the prior committed
       value? The latter is cheaper and weaker.
-- [ ] Can the intent slot be made adjacent enough that a resolving read is one
-      range operation rather than two point reads? This decides whether the
-      resolving mode costs a constant factor or a round trip.
+- [x] **Answered by the code: one range operation, and it is the one already
+      performed.** Intents ride along in the existing get. See above.
+- [ ] Does the `bail!` on unknown subkeys need to become tolerant before an
+      intent subkey can be rolled out, and does `EntryMetadataKey` get moved to
+      vbare in the same change?
 - [ ] Which relations actually need this, given co-location handles most cases?
       Expected answer: trades, gifting, and ownership transfer. Not friendships,
       which co-locate cleanly into a relation-keyed actor.
