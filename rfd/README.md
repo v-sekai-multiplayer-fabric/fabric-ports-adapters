@@ -13,7 +13,7 @@ it cost. [RFD 0000](0000-how-to-write-an-rfd.md) describes the conventions.
 
 | RFD | Title |
 |---|---|
-| [0001](0001-substrate-port.md) | A substrate port for cluster bootstrap |
+| [0001](0001-substrate-port.md) | A substrate port for cluster bootstrap (superseded by 0016) |
 | [0002](0002-allocate-addresses.md) | Allocate node addresses, do not discover them |
 | [0003](0003-engine-configuration.md) | Engine topology configuration |
 | [0004](0004-image-provenance.md) | Engine image provenance and version coupling |
@@ -21,6 +21,7 @@ it cost. [RFD 0000](0000-how-to-write-an-rfd.md) describes the conventions.
 | [0011](0011-godot-runtime-provenance.md) | Godot runtime provenance |
 | [0014](0014-foundationdb-driver.md) | A FoundationDB driver for UniversalDB |
 | [0015](0015-tooling-constraints.md) | Tooling constraints: no dependencies, deterministic tests |
+| [0016](0016-collapse-the-substrate-port.md) | Collapse the substrate port |
 
 ## Proposed, or partially built elsewhere
 

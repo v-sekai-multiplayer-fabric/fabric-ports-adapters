@@ -2,7 +2,12 @@
 
 ## Status
 
-Accepted, implemented.
+**Superseded by [RFD 0016](0016-collapse-the-substrate-port.md).** The port was
+removed when the rule-of-three limit was applied and only two implementations
+existed.
+
+Kept because it records the shape to restore if a second production substrate
+appears. What follows describes the design as it was.
 
 ## Problem
 

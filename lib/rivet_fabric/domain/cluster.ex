@@ -89,25 +89,6 @@ defmodule RivetFabric.Domain.Cluster do
   end
 
   @doc """
-  The engine's FoundationDB config.
-
-  `addresses` is a list because the engine writes its own cluster file from it
-  at `cluster_file_write_path`. Supplying a pre-made `cluster_file` path instead
-  is also valid, but the addresses are only knowable after the nodes exist.
-  """
-  def fdb_config(coordinators, opts \\ []) do
-    %{
-      "foundationdb" => %{
-        "addresses" => String.split(coordinators, ","),
-        "cluster_description" => Keyword.get(opts, :description, "rivet"),
-        "cluster_id" => Keyword.get(opts, :id, "rivet"),
-        "cluster_file_write_path" =>
-          Keyword.get(opts, :write_path, "/etc/foundationdb/fdb.cluster")
-      }
-    }
-  end
-
-  @doc """
   A serverless runner config.
 
   Returns `{:error, reason}` rather than letting the engine reject it with a

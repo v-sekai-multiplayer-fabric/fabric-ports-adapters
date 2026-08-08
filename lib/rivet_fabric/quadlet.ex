@@ -1,6 +1,6 @@
-defmodule RivetFabric.Adapters.Quadlet do
+defmodule RivetFabric.Quadlet do
   @moduledoc """
-  Substrate adapter backed by podman and systemd quadlets.
+  Drives podman and systemd quadlets directly.
 
   Each node becomes a `.container` unit under
   `~/.config/containers/systemd/`, which the podman user generator turns into a
@@ -10,8 +10,6 @@ defmodule RivetFabric.Adapters.Quadlet do
   subnet and are given static addresses, because FoundationDB records
   coordinators by IP and podman otherwise reassigns addresses on restart.
   """
-
-  @behaviour RivetFabric.Ports.Substrate
 
   alias RivetFabric.Shell
 
@@ -23,7 +21,6 @@ defmodule RivetFabric.Adapters.Quadlet do
   defp unit_path(app, name), do: Path.join(@unit_dir, "#{unit_name(app, name)}.container")
   defp service(app, name), do: "#{unit_name(app, name)}.service"
 
-  @impl true
   def network_ensure(net, opts \\ []) do
     case Shell.run("podman", ["network", "exists", net]) do
       {_, 0} ->
@@ -45,7 +42,6 @@ defmodule RivetFabric.Adapters.Quadlet do
   defp subnet_args(subnet, nil), do: ["--subnet", subnet]
   defp subnet_args(subnet, gateway), do: ["--subnet", subnet, "--gateway", gateway]
 
-  @impl true
   def image_ensure(%{tag: tag, containerfile: containerfile, context: context} = spec) do
     args =
       ["build", "-t", tag, "-f", containerfile] ++
@@ -59,7 +55,6 @@ defmodule RivetFabric.Adapters.Quadlet do
     end
   end
 
-  @impl true
   def node_ensure(spec) do
     File.mkdir_p!(@unit_dir)
     File.write!(unit_path(spec.app, spec.name), render_unit(spec))
@@ -137,7 +132,6 @@ defmodule RivetFabric.Adapters.Quadlet do
     Enum.join(lines, "\n") <> "\n"
   end
 
-  @impl true
   def apply do
     case Shell.run("systemctl", ["--user", "daemon-reload"]) do
       {_, 0} -> :ok
@@ -154,7 +148,6 @@ defmodule RivetFabric.Adapters.Quadlet do
     end
   end
 
-  @impl true
   def node_list(app) do
     {out, code} =
       Shell.run("podman", [
@@ -211,7 +204,6 @@ defmodule RivetFabric.Adapters.Quadlet do
     end
   end
 
-  @impl true
   def node_exec(app, name, argv) do
     case Shell.run("podman", ["exec", unit_name(app, name)] ++ argv, timeout: :timer.minutes(5)) do
       {out, 0} -> {:ok, out}
@@ -219,7 +211,6 @@ defmodule RivetFabric.Adapters.Quadlet do
     end
   end
 
-  @impl true
   def node_write_file(app, name, guest_path, content) do
     tmp = Path.join(System.tmp_dir!(), "rivet-fabric-#{:erlang.unique_integer([:positive])}")
     File.write!(tmp, content)
@@ -237,7 +228,6 @@ defmodule RivetFabric.Adapters.Quadlet do
     result
   end
 
-  @impl true
   def node_restart(app, name) do
     case Shell.run("systemctl", ["--user", "restart", service(app, name)],
            timeout: :timer.minutes(5)
@@ -247,7 +237,6 @@ defmodule RivetFabric.Adapters.Quadlet do
     end
   end
 
-  @impl true
   def node_stop(app, name) do
     case Shell.run("systemctl", ["--user", "stop", service(app, name)],
            timeout: :timer.minutes(2)
@@ -257,7 +246,6 @@ defmodule RivetFabric.Adapters.Quadlet do
     end
   end
 
-  @impl true
   def node_destroy(app, name) do
     _ = node_stop(app, name)
     path = unit_path(app, name)

@@ -35,6 +35,11 @@ application avoids the question.
 
 ## Decision: tests do not touch the substrate
 
+**Superseded by [RFD 0016](0016-collapse-the-substrate-port.md).** The Fake was
+deleted with the port, so the bootstrap sequence is no longer covered. What
+follows is retained because the reasoning still holds and would apply again if
+the port returns.
+
 `Adapters.Fake` implements the full substrate port in memory, so the entire
 bootstrap sequence is exercised without podman.
 

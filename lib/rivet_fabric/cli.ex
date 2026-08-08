@@ -8,7 +8,7 @@ defmodule RivetFabric.CLI do
   The only substrate is podman + systemd quadlets.
   """
 
-  alias RivetFabric.Adapters.Quadlet
+  alias RivetFabric.Quadlet
   alias RivetFabric.{Bootstrap, Shell}
   alias RivetFabric.Domain.Spec
 
@@ -17,15 +17,14 @@ defmodule RivetFabric.CLI do
   def main(argv) do
     {opts, args, _} = OptionParser.parse(argv, strict: [count: :integer])
 
-    adapter = Quadlet
     spec = build_spec(opts)
 
     case args do
-      ["fdb-up"] -> fdb_up(adapter, spec)
-      ["fdb-status"] -> fdb_status(adapter, spec)
-      ["build"] -> build_images(adapter, spec)
-      ["destroy"] -> destroy(adapter, spec)
-      ["doctor"] -> doctor(adapter)
+      ["fdb-up"] -> fdb_up(spec)
+      ["fdb-status"] -> fdb_status(spec)
+      ["build"] -> build_images(spec)
+      ["destroy"] -> destroy(spec)
+      ["doctor"] -> doctor()
       _ -> usage()
     end
   end
@@ -39,9 +38,9 @@ defmodule RivetFabric.CLI do
     end
   end
 
-  defp fdb_up(adapter, spec) do
+  defp fdb_up(spec) do
     image =
-      case build_fdb_image(adapter, spec) do
+      case build_fdb_image(spec) do
         {:ok, image} ->
           image
 
@@ -50,12 +49,12 @@ defmodule RivetFabric.CLI do
           System.halt(1)
       end
 
-    case Bootstrap.foundationdb(adapter, spec, image) do
+    case Bootstrap.foundationdb(spec, image) do
       {:ok, coordinators} ->
         IO.puts("\ncoordinators: #{coordinators}")
         node = hd(Spec.fdb_nodes(spec))
 
-        case Bootstrap.await_available(adapter, spec.fdb.app, node) do
+        case Bootstrap.await_available(spec.fdb.app, node) do
           {:ok, out} ->
             IO.puts(out)
 
@@ -70,8 +69,8 @@ defmodule RivetFabric.CLI do
     end
   end
 
-  defp build_fdb_image(adapter, spec) do
-    adapter.image_ensure(%{
+  defp build_fdb_image(spec) do
+    Quadlet.image_ensure(%{
       tag: "rivet-fabric/foundationdb:#{spec.fdb.version}",
       containerfile: Path.join([@assets, "foundationdb", "Containerfile"]),
       context: Path.join(@assets, "foundationdb"),
@@ -79,8 +78,8 @@ defmodule RivetFabric.CLI do
     })
   end
 
-  defp build_images(adapter, spec) do
-    case build_fdb_image(adapter, spec) do
+  defp build_images(spec) do
+    case build_fdb_image(spec) do
       {:ok, tag} ->
         IO.puts("built #{tag}")
 
@@ -104,21 +103,21 @@ defmodule RivetFabric.CLI do
     """)
   end
 
-  defp fdb_status(adapter, spec) do
+  defp fdb_status(spec) do
     node = hd(Spec.fdb_nodes(spec))
 
-    case Bootstrap.status(adapter, spec.fdb.app, node) do
+    case Bootstrap.status(spec.fdb.app, node) do
       {:ok, out} -> IO.puts(String.trim(out))
       {:error, reason} -> IO.puts(:stderr, "status failed: #{reason}")
     end
   end
 
-  defp destroy(adapter, spec) do
-    :ok = Bootstrap.destroy(adapter, spec)
+  defp destroy(spec) do
+    :ok = Bootstrap.destroy(spec)
     IO.puts("destroyed")
   end
 
-  defp doctor(_adapter) do
+  defp doctor() do
     check("podman", Shell.available?("podman"))
     check("systemctl", Shell.available?("systemctl"))
 

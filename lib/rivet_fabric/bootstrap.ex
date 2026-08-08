@@ -1,6 +1,6 @@
 defmodule RivetFabric.Bootstrap do
   @moduledoc """
-  The bootstrap sequence, written against the substrate port.
+  The bootstrap sequence.
 
   ## Why addresses are allocated, not discovered
 
@@ -26,9 +26,10 @@ defmodule RivetFabric.Bootstrap do
   require Logger
 
   alias RivetFabric.Domain.{Cluster, Spec}
+  alias RivetFabric.Quadlet
 
   @doc "Bring up the FoundationDB cluster. Returns `{:ok, coordinators}`."
-  def foundationdb(adapter, spec, image) do
+  def foundationdb(spec, image) do
     plan = Spec.fdb_plan(spec)
     coordinators = Cluster.coordinators(Enum.map(plan, &elem(&1, 1)), spec.fdb.port)
     names = Enum.map(plan, &elem(&1, 0))
@@ -36,16 +37,16 @@ defmodule RivetFabric.Bootstrap do
     Logger.info("coordinators allocated up front: #{coordinators}")
 
     with :ok <-
-           adapter.network_ensure(spec.network, subnet: spec.subnet, gateway: spec.gateway),
-         :ok <- create_nodes(adapter, spec, plan, image, coordinators),
-         :ok <- verify_agreement(adapter, spec.fdb.app, names),
+           Quadlet.network_ensure(spec.network, subnet: spec.subnet, gateway: spec.gateway),
+         :ok <- create_nodes(spec, plan, image, coordinators),
+         :ok <- verify_agreement(spec.fdb.app, names),
          :ok <-
-           configure(adapter, spec.fdb.app, hd(names), length(names), spec.fdb.storage) do
+           configure(spec.fdb.app, hd(names), length(names), spec.fdb.storage) do
       {:ok, coordinators}
     end
   end
 
-  defp create_nodes(adapter, spec, plan, image, coordinators) do
+  defp create_nodes(spec, plan, image, coordinators) do
     Enum.reduce_while(plan, :ok, fn {name, ip}, _acc ->
       node = %{
         app: spec.fdb.app,
@@ -64,7 +65,7 @@ defmodule RivetFabric.Bootstrap do
         }
       }
 
-      case adapter.node_ensure(node) do
+      case Quadlet.node_ensure(node) do
         :ok -> {:cont, :ok}
         err -> {:halt, err}
       end
@@ -77,10 +78,10 @@ defmodule RivetFabric.Bootstrap do
   Cheap, and it is what distinguishes "three nodes in one cluster" from "three
   one-node clusters that each look healthy".
   """
-  def verify_agreement(adapter, app, names, attempts \\ 20) do
+  def verify_agreement(app, names, attempts \\ 20) do
     contents =
       Enum.map(names, fn name ->
-        case adapter.node_exec(app, name, ["cat", "/var/fdb/fdb.cluster"]) do
+        case Quadlet.node_exec(app, name, ["cat", "/var/fdb/fdb.cluster"]) do
           {:ok, out} -> out
           {:error, _} -> ""
         end
@@ -89,14 +90,14 @@ defmodule RivetFabric.Bootstrap do
     cond do
       Enum.any?(contents, &(String.trim(&1) == "")) and attempts > 0 ->
         Process.sleep(1000)
-        verify_agreement(adapter, app, names, attempts - 1)
+        verify_agreement(app, names, attempts - 1)
 
       Cluster.cluster_files_agree?(contents) ->
         :ok
 
       attempts > 0 ->
         Process.sleep(1000)
-        verify_agreement(adapter, app, names, attempts - 1)
+        verify_agreement(app, names, attempts - 1)
 
       true ->
         {:error,
@@ -112,10 +113,10 @@ defmodule RivetFabric.Bootstrap do
   can win. Re-running against a live cluster is an error from fdbcli's point of
   view but not from ours.
   """
-  def configure(adapter, app, name, node_count, storage, attempts \\ 30) do
+  def configure(app, name, node_count, storage, attempts \\ 30) do
     cmd = Cluster.configure_command(node_count, storage)
 
-    case adapter.node_exec(app, name, ["fdbcli", "-C", "/var/fdb/fdb.cluster", "--exec", cmd]) do
+    case Quadlet.node_exec(app, name, ["fdbcli", "-C", "/var/fdb/fdb.cluster", "--exec", cmd]) do
       {:ok, out} ->
         cond do
           String.contains?(out, "Database created") ->
@@ -128,7 +129,7 @@ defmodule RivetFabric.Bootstrap do
 
           attempts > 0 ->
             Process.sleep(2000)
-            configure(adapter, app, name, node_count, storage, attempts - 1)
+            configure(app, name, node_count, storage, attempts - 1)
 
           true ->
             {:error, "configure did not take: #{String.trim(out)}"}
@@ -137,7 +138,7 @@ defmodule RivetFabric.Bootstrap do
       {:error, reason} ->
         if attempts > 0 do
           Process.sleep(2000)
-          configure(adapter, app, name, node_count, storage, attempts - 1)
+          configure(app, name, node_count, storage, attempts - 1)
         else
           {:error, "configure failed: #{reason}"}
         end
@@ -150,8 +151,8 @@ defmodule RivetFabric.Bootstrap do
   `configure new` succeeding only means the configuration was accepted;
   recruitment happens afterwards, so this is a separate wait.
   """
-  def await_available(adapter, app, name, attempts \\ 60) do
-    case status(adapter, app, name) do
+  def await_available(app, name, attempts \\ 60) do
+    case status(app, name) do
       {:ok, out} ->
         cond do
           String.contains?(out, "available") and not String.contains?(out, "unavailable") ->
@@ -159,7 +160,7 @@ defmodule RivetFabric.Bootstrap do
 
           attempts > 0 ->
             Process.sleep(2000)
-            await_available(adapter, app, name, attempts - 1)
+            await_available(app, name, attempts - 1)
 
           true ->
             {:error, "database never became available: #{String.trim(out)}"}
@@ -168,7 +169,7 @@ defmodule RivetFabric.Bootstrap do
       {:error, reason} ->
         if attempts > 0 do
           Process.sleep(2000)
-          await_available(adapter, app, name, attempts - 1)
+          await_available(app, name, attempts - 1)
         else
           {:error, reason}
         end
@@ -176,8 +177,8 @@ defmodule RivetFabric.Bootstrap do
   end
 
   @doc "Report cluster status as seen by fdbcli."
-  def status(adapter, app, name) do
-    adapter.node_exec(app, name, [
+  def status(app, name) do
+    Quadlet.node_exec(app, name, [
       "fdbcli",
       "-C",
       "/var/fdb/fdb.cluster",
@@ -187,14 +188,14 @@ defmodule RivetFabric.Bootstrap do
   end
 
   @doc "Tear every node down."
-  def destroy(adapter, spec) do
+  def destroy(spec) do
     for name <- Spec.fdb_nodes(spec) do
-      _ = adapter.node_destroy(spec.fdb.app, name)
+      _ = Quadlet.node_destroy(spec.fdb.app, name)
     end
 
     for app <- [spec.engine.app, spec.godot.app] do
-      case adapter.node_list(app) do
-        {:ok, nodes} -> for n <- nodes, do: adapter.node_destroy(app, n.name)
+      case Quadlet.node_list(app) do
+        {:ok, nodes} -> for n <- nodes, do: Quadlet.node_destroy(app, n.name)
         _ -> :ok
       end
     end
