@@ -10,14 +10,33 @@ outward.
 
 ## Problem
 
-Convert a 100 MB glb into a Godot scene, from a client, without adding storage,
-a transport, or a second container.
+Convert a 100 MB glTF asset into a Godot scene, from a client, without adding
+storage, a transport, or a second container.
 
-**glb only.** `.gltf` is excluded on purpose rather than for simplicity: it is
-the JSON variant and references external `.bin` buffers and texture files, which
-a single-file upload cannot carry. `.glb` is self-contained, so it is the only
-form of glTF this path can accept correctly. vrm is deferred; see
-[Deferred](#deferred).
+**Self-contained glTF only**, which is a property of the file rather than of the
+extension. An earlier draft of this RFD said `.gltf` was excluded outright; that
+was wrong.
+
+| Input | Works | Why |
+|---|---|---|
+| `.glb` | **yes** | binary container, self-contained by construction |
+| `.gltf` **embedded** — buffers as `data:` URIs | **yes** | self-contained, verified |
+| `.gltf` **regular** — references `.bin` or loose textures | **no** | the sibling files are never uploaded |
+
+To be explicit, because the extension is the same in both `.gltf` rows:
+**embedded `.gltf` works, regular `.gltf` does not.** Nothing about the filename
+distinguishes them, so a user cannot tell by looking, and neither can the form's
+`accept` filter.
+
+Verified both ways. A self-contained `.gltf` converts and loads
+(`{"event":"loaded","mesh_instances":1}`); one with an external buffer fails
+with `glTF: Binary file not found: /external.bin`.
+
+That failure is **loud**, which is what makes accepting `.gltf` safe: a user who
+uploads a non-self-contained file gets a clear error naming the missing file,
+not a silently empty scene.
+
+vrm is deferred; see [Deferred](#deferred).
 
 100 MB fits nowhere in one piece. Rivet caps an incoming message at 32 MiB and a
 request body at 20 MiB, and MCP is JSON-RPC so binary must be base64, which
