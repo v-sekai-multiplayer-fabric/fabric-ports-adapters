@@ -58,7 +58,94 @@ is pinned by commit:
 | `asset_convert` | glb to compressed scene, in a child process |
 | `asset_fetch` | return one base64 chunk of the result |
 
+## Where this sits in the fabric
+
+Asset conversion is one path through the V-Sekai fabric, not a standalone
+service. The same zone actor that converts a glb also serves players, and the
+two reach it over different transports.
+
+```mermaid
+flowchart TB
+    subgraph creators["👤 Creators"]
+        WF["📄 Web form<br/>picks a glb"]
+    end
+
+    subgraph players["🕹️ Players"]
+        VR["🥽 zone-client-godot<br/>web / WASM build"]
+    end
+
+    subgraph edge["🌐 Rivet edge"]
+        GT["🛡️ Guard — TCP<br/>HTTP + WebSocket<br/><b>working</b>"]
+        GQ["🚧 Guard — QUIC<br/>HTTP/3 + WebTransport<br/><b>not wired</b>"]
+        GW["🔀 pegboard-gateway"]
+    end
+
+    subgraph zone["📦 Zone actor — container-runner + headless Godot"]
+        MCP["🔌 MCP surface<br/>assets + agent tools"]
+        SIM["🎮 SceneTree<br/>entities, 15.6 ms tick"]
+        CONV["🔄 convert.gd<br/>one-shot child"]
+    end
+
+    subgraph engine["🧠 Rivet Engine + FoundationDB"]
+        PB["📋 Pegboard<br/>identity, exclusivity"]
+        ST[("🗃️ actor state<br/>via depot → UniversalDB")]
+    end
+
+    WF -->|"glb, base64 chunks"| GT
+    GT --> GW
+    GW --> MCP
+    MCP --> CONV
+    CONV -->|"RSCC scene"| MCP
+
+    VR -.->|"entity packets<br/>100 bytes, HLC"| GQ
+    GQ -.-> GW
+    GW --> SIM
+    CONV -->|"scene loaded into"| SIM
+
+    PB -.-> zone
+    zone -.-> ST
+```
+
+Solid edges are paths that work today. **Dotted edges through `Guard — QUIC` do
+not exist yet**: the QUIC listener is built but never bound, so player traffic
+has no WebTransport route. See [RFD 0007](0007-webtransport-in-guard.md).
+
+### Why players and creators want different transports
+
+| | Creator upload | Player session |
+|---|---|---|
+| Payload | one 100 MB glb | 100-byte entity packets |
+| Rate | once | every 15.6 ms |
+| Ordering | must be exact | causal is enough |
+| Loss | fatal | tolerable, the next tick supersedes |
+| Transport | HTTP over TCP, chunked | WebTransport over QUIC |
+
+TCP is right for the asset path and wrong for the simulation: head-of-line
+blocking on one connection stalls every entity behind one lost packet.
+WebTransport applies it per stream instead, which is the whole reason
+[RFD 0007](0007-webtransport-in-guard.md) exists.
+
+So the asset pipeline in this RFD deliberately uses the transport that already
+works, and the player path is blocked on wiring the one that does not.
+
+### What is actually built, verified against the code
+
+| Step | State | Evidence |
+|---|---|---|
+| Transport erased in `WebSocketHandle` | **done** | `websocket_handle.rs` uses `BoxedWsStream` |
+| `quinn`, `h3`, `h3-webtransport` in the workspace | **done** | root `Cargo.toml` |
+| QUIC endpoint with ALPN `h3` | **done** | `guard-core/src/h3_server.rs` |
+| WebSocket framing over a bidi stream | **done** | `BidiStream` is already `AsyncRead`/`AsyncWrite` |
+| Route into `ProxyService` | **not done** | `grep serve_custom_websocket` → 0 hits |
+| Bind the listener in `run_server` | **not done** | `run_h3_listener` → 0 call sites |
+
+The transport plumbing compiles and is unreachable. Nothing calls it.
+
 ## The cluster, end to end
+
+The asset path in detail. Every hop below is on the TCP side, which is why this
+path works today.
+
 
 ```mermaid
 flowchart TB
