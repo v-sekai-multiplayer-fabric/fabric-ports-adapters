@@ -98,10 +98,51 @@ high-value; the frequent operations are neither:
 A trade contract is worth two hops and a recovery obligation. A position update
 is not, and never has to pay for the existence of trades.
 
-So the design is **opt-in per state, not per system**. An actor declares which
-of its state is transactional and accepts intent checks on exactly that.
-Everything else is untouched, including in actors that also hold transactional
-state.
+### Declared where? Nowhere: opt in per read
+
+Three places the opt-in could live, from least to most flexible:
+
+| Granularity | Cost falls on | Problem |
+|---|---|---|
+| Per actor type | every key in every actor of that type | coarsest; a trade-capable actor taxes its own position updates |
+| Per key prefix | keys under that prefix | requires deciding up front which state will ever be transactional |
+| **Per read** | only the read that asks | none of the above |
+
+Per-read is the actor-native answer, and it works because of a property of
+intents that the other two obscure: **an uncommitted intent is not supposed to
+be visible.** A reader that ignores intents and point-reads the key gets the
+last committed value, which is exactly what it should see.
+
+So the intent check is not a correctness requirement on every read. It is a
+requirement only for readers that need to observe in-flight state, and those are
+the same readers that care about linearizability.
+
+Concretely, two read modes on the same key, chosen at the call site:
+
+- **Point read**, unchanged from today. Returns the last resolved value. Cheap,
+  and what a tick-rate position read uses.
+- **Resolving read**, a range read over the key and its adjacent intent slot in
+  one operation. If an intent is present, consult the record actor and resolve.
+  What a trade uses.
+
+No declaration, no schema change, no key set fixed in advance. Any key can carry
+an intent; only readers who ask will look.
+
+### The honest catch
+
+A point read is not linearizable, and the failure is narrow but real: after a
+transaction commits but before its intent is resolved, the key still holds the
+old value. A point reader in that window sees stale data.
+
+That window is bounded by resolution, which the committer does immediately and a
+preventer does on recovery. It is nonetheless a genuine weakening, so the two
+modes must be named for what they are rather than presented as a performance
+knob. "Fast read" would be a lie; "last resolved value" is the truth.
+
+This is the same trade CockroachDB makes with follower reads, and the same one
+[RFD 0018](0018-authority-and-the-trusted-substrate.md) records between the
+control and data planes: the data plane already tolerates staleness by design,
+so it is the natural user of the cheap mode.
 
 Rarity also makes the unattractive parts cheap:
 
@@ -273,8 +314,9 @@ not wanted.
       need a sweeper.
 - [ ] Does an intent block a read, or can a reader see the prior committed
       value? The latter is cheaper and weaker.
-- [ ] How is transactional state declared? Per key prefix, per state field, or
-      per actor type. This decides how precisely the cost can be scoped.
+- [ ] Can the intent slot be made adjacent enough that a resolving read is one
+      range operation rather than two point reads? This decides whether the
+      resolving mode costs a constant factor or a round trip.
 - [ ] Which relations actually need this, given co-location handles most cases?
       Expected answer: trades, gifting, and ownership transfer. Not friendships,
       which co-locate cleanly into a relation-keyed actor.
