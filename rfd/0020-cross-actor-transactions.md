@@ -2,9 +2,18 @@
 
 ## Status
 
-Design. Not implemented. An earlier revision of this RFD recommended against
-the feature; that recommendation was **withdrawn**, because it rested on a
-conflation described under [The error in the first analysis](#the-error-in-the-first-analysis).
+**Rejected.** Not on feasibility grounds: the design below works, and the first
+revision of this RFD was wrong to claim otherwise. Rejected because it is
+engine-side transaction ownership, which upstream names as a thing not to add
+and which `pegboard-envoy`, `envoy-client`, and the SQLite paths are documented
+as relying on the absence of.
+
+Co-location ([RFD 0012](0012-actor-indexing-and-search.md)) remains the design.
+The actor boundary is the transaction boundary.
+
+Kept in full because the analysis is sound and the question will be asked again.
+A future reader should be able to see that this was considered and declined,
+and on what basis, rather than rediscovering it.
 
 ## Problem
 
@@ -127,9 +136,9 @@ sequencing:
 - [ ] Conformance across all three backends, including the interleaving cases
       that distinguish serializable from merely atomic.
 
-## Alternatives that remain valid
+## What was chosen instead
 
-Co-location is still correct and still cheaper for anything that can use it
+Co-location, which is correct and cheaper for anything that can use it
 ([RFD 0012](0012-actor-indexing-and-search.md)). A relation-keyed actor is
 linearizable today with no engine change, no acquisition latency, and no
 availability cost. This feature is for the cases that genuinely cannot be
@@ -140,11 +149,22 @@ API and failing loudly when a workflow mutates actors it does not own without
 declaring one. That closes the silent-misreading gap even where a transaction is
 not wanted.
 
-## Open questions
+## What would reopen this
 
-- [ ] Should `transact` refuse rather than wait when a participant is slow to
-      acquire, and if so on what budget?
-- [ ] Does acquisition interact with actor sleep in a way that lets a
-      transaction keep an actor awake indefinitely?
-- [ ] Which components documented as relying on the single-writer invariant
-      actually break, as opposed to merely being documented against this?
+A relation that must be atomic **and** genuinely cannot be co-located. None has
+been identified. If one appears, the design above is the starting point and the
+first question to answer is which components documented as relying on the
+single-writer invariant actually break, as opposed to merely being documented
+against it.
+
+## Still worth doing regardless
+
+Two items from this analysis do not depend on the rejected feature.
+
+- [ ] Implement `TransactionTooOld` and `error_is_transaction_too_large` for the
+      rocksdb and postgres drivers. Currently a `TODO` and a hardcoded `false`.
+      Retry classification silently differs by backend today, which is a live
+      defect independent of anything here.
+- [ ] Make workflows honest: name compensation in the API and fail loudly when a
+      workflow mutates actors it does not own without declaring one. The silent
+      misreading is the harm; the missing transaction is not.
