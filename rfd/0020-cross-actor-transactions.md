@@ -75,20 +75,45 @@ it. That is what buys a single round rather than two.
   drives the record to a terminal state itself. This is the "preventer" role in
   the spec, and it is why no coordinator process is required.
 
-## What it costs
+## The cost is opt-in, and that is the point
 
-**Reads get more expensive and more complicated.** Every read must check for
-intents, and an unresolved intent means a second hop to the record actor. This
-is the real price, and it is paid on the read path, which is the hot one.
+An earlier draft of this section said "every read must check for intents",
+implying a global tax on the read path. That is wrong, and the correction
+changes how attractive the design is.
 
-**Recovery must be implemented, not assumed.** The liveness properties hold
-because preventers exist. Without them, an abandoned intent blocks readers
-indefinitely. This is the part most likely to be skipped and the part the spec
-is most useful for.
+**Only state that can carry an intent needs checking.** An actor that never
+participates in a multi-actor transaction has no intents in its storage, so its
+reads are byte-for-byte what they are today. The cost is scoped to the keys that
+opt in, not to the system.
+
+This matches how such transactions are actually distributed. They are rare and
+high-value; the frequent operations are neither:
+
+| | Frequency | Value per operation | Transactional |
+|---|---|---|---|
+| Entity position at tick rate | very high | negligible individually | never |
+| Profile edit, upload | moderate | low | no |
+| Trade, gift, ownership transfer | rare | high; a half-applied state is exploitable | yes |
+
+A trade contract is worth two hops and a recovery obligation. A position update
+is not, and never has to pay for the existence of trades.
+
+So the design is **opt-in per state, not per system**. An actor declares which
+of its state is transactional and accepts intent checks on exactly that.
+Everything else is untouched, including in actors that also hold transactional
+state.
+
+Rarity also makes the unattractive parts cheap:
+
+- **Recovery** must still be implemented, since liveness depends on preventers
+  existing. But stranded intents are rare by construction, so a sweeper can run
+  infrequently and a slow one is acceptable.
+- **The second hop** happens only when a read races an in-flight transaction on
+  the same key, which for rare transactions is rare squared.
 
 **It is a library, not a protocol change.** Intents and records are ordinary
-actor state, so this can be built and tested without touching the engine, which
-is the strongest argument for it.
+actor state, so this can be built and tested without touching the engine. That
+remains the strongest argument for it.
 
 ## Degradation across backends
 
@@ -248,7 +273,11 @@ not wanted.
       need a sweeper.
 - [ ] Does an intent block a read, or can a reader see the prior committed
       value? The latter is cheaper and weaker.
+- [ ] How is transactional state declared? Per key prefix, per state field, or
+      per actor type. This decides how precisely the cost can be scoped.
 - [ ] Which relations actually need this, given co-location handles most cases?
+      Expected answer: trades, gifting, and ownership transfer. Not friendships,
+      which co-locate cleanly into a relation-keyed actor.
 
 ## Still worth doing regardless
 
