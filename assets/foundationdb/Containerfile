@@ -1,0 +1,11 @@
+# syntax=docker/dockerfile:1
+#
+# One fdbserver process per node. Works under podman and on Fly unchanged.
+ARG FDB_VERSION=7.3.76
+
+FROM docker.io/foundationdb/foundationdb:${FDB_VERSION}
+
+COPY entrypoint.sh /usr/local/bin/fdb-entrypoint
+RUN chmod +x /usr/local/bin/fdb-entrypoint
+
+ENTRYPOINT ["/usr/local/bin/fdb-entrypoint"]

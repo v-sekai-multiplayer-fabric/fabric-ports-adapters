@@ -1,0 +1,71 @@
+# syntax=docker/dockerfile:1
+#
+# Headless Godot MCP zone, hosted by container-runner as a Rivet actor.
+ARG GODOT_VERSION=4.7.1-stable
+ARG RUST_VERSION=1
+ARG RIVET_REPO=https://github.com/v-sekai-multiplayer-fabric/rivet.git
+ARG RIVET_REF=a6cd747fcd49e9f28f9c8a0c622456e763e3d771
+
+FROM docker.io/library/rust:${RUST_VERSION}-bookworm AS runner-builder
+ARG RIVET_REPO
+ARG RIVET_REF
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates git pkg-config libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /build
+RUN git init -q . \
+    && git remote add origin "${RIVET_REPO}" \
+    && git fetch --depth 1 origin "${RIVET_REF}" \
+    && git checkout -q FETCH_HEAD
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/build/target \
+    cargo build --release -p rivet-container-runner --bin rivet-container-runner \
+    && cp target/release/rivet-container-runner /rivet-container-runner \
+    && cp -r container-runner/examples/godot-demo /godot-demo
+
+# Godot 4 ships one Linux binary that runs headless under --headless, so there
+# is no separate server download.
+FROM docker.io/library/debian:bookworm-slim AS godot-fetch
+ARG GODOT_VERSION
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl unzip \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl -fsSL -o /tmp/godot.zip \
+      "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}/Godot_v${GODOT_VERSION}_linux.x86_64.zip" \
+    && unzip -q /tmp/godot.zip -d /tmp/godot \
+    && mv /tmp/godot/Godot_v${GODOT_VERSION}_linux.x86_64 /godot \
+    && chmod +x /godot
+
+FROM docker.io/library/debian:bookworm-slim
+# Godot links against these even under --headless.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates libfontconfig1 libfreetype6 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=godot-fetch /godot /usr/local/bin/godot
+COPY --from=runner-builder /rivet-container-runner /usr/local/bin/rivet-container-runner
+COPY --from=runner-builder /godot-demo/entrypoint.sh /usr/local/bin/godot-zone-entrypoint
+COPY --from=runner-builder /godot-demo/project /opt/zone
+RUN chmod +x /usr/local/bin/godot-zone-entrypoint
+
+# The in-editor MCP addon, which also has a runtime path. Pinned by commit,
+# because the repository publishes no tags.
+ARG MCP_REPO=https://github.com/v-sekai-multiplayer-fabric/vsekai-godot-mcp
+ARG MCP_COMMIT=580bb5fedc7c1bb56eb38b8377f918d9c5ffc998
+ADD ${MCP_REPO}/archive/${MCP_COMMIT}.tar.gz /tmp/mcp.tar.gz
+RUN mkdir -p /opt/zone/addons \
+    && tar -xzf /tmp/mcp.tar.gz -C /tmp \
+    && cp -r /tmp/vsekai-godot-mcp-${MCP_COMMIT}/addons/vsekai_godot_mcp /opt/zone/addons/ \
+    && rm -rf /tmp/mcp.tar.gz /tmp/vsekai-godot-mcp-${MCP_COMMIT}
+
+# Godot writes config and an import cache under $HOME.
+ENV HOME=/tmp \
+    GODOT_BIN=godot \
+    GODOT_PROJECT=/opt/zone \
+    ZONE_SCRIPT=zone_main.gd
+RUN godot --headless --path /opt/zone --import || true
+
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/rivet-container-runner", "--", "/usr/local/bin/godot-zone-entrypoint"]

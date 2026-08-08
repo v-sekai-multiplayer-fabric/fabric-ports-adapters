@@ -1,0 +1,57 @@
+# syntax=docker/dockerfile:1
+#
+# Rivet Engine built against FoundationDB.
+#
+# The FoundationDB backend is not in upstream Rivet. It lives on a branch of the
+# fork, cloned here at a pinned commit. Bump RIVET_REF to move.
+#
+# libfdb_c.so is a hard runtime dependency of the foundationdb feature, and its
+# version must stay protocol-compatible with the fdbserver nodes. Both come from
+# the same base image so they cannot drift apart.
+ARG FDB_VERSION=7.3.76
+ARG RUST_VERSION=1
+ARG RIVET_REPO=https://github.com/v-sekai-multiplayer-fabric/rivet.git
+ARG RIVET_REF=a6cd747fcd49e9f28f9c8a0c622456e763e3d771
+
+FROM docker.io/foundationdb/foundationdb:${FDB_VERSION} AS fdb
+
+FROM docker.io/library/rust:${RUST_VERSION}-bookworm AS builder
+ARG RIVET_REPO
+ARG RIVET_REF
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates clang cmake git libclang-dev libssl-dev pkg-config protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/*
+
+# Only the library is copied; the headers come from the crate's
+# embedded-fdb-include feature, because the runtime package ships no headers.
+COPY --from=fdb /usr/lib/libfdb_c.so /usr/lib/libfdb_c.so
+
+WORKDIR /build
+RUN git init -q . \
+    && git remote add origin "${RIVET_REPO}" \
+    && git fetch --depth 1 origin "${RIVET_REF}" \
+    && git checkout -q FETCH_HEAD
+
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/build/target \
+    cargo build --release -p rivet-engine --bin rivet-engine --features foundationdb \
+    && cp target/release/rivet-engine /rivet-engine
+
+FROM docker.io/library/debian:bookworm-slim
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=fdb /usr/lib/libfdb_c.so /usr/lib/libfdb_c.so
+COPY --from=builder /rivet-engine /usr/local/bin/rivet-engine
+
+# The engine merges every config file in /etc/rivet. The orchestrator writes
+# topology.json here, because topology cannot be set via environment variables.
+RUN mkdir -p /etc/foundationdb /etc/rivet
+
+EXPOSE 6420
+ENTRYPOINT ["/usr/local/bin/rivet-engine"]
+CMD ["start"]
