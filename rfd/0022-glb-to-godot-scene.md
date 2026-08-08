@@ -37,8 +37,11 @@ is pinned by commit:
 
 ```mermaid
 flowchart TB
-    subgraph client["🖥️ Client"]
-        C["MCP client<br/>chunks base64"]
+    subgraph client["🖥️ Browser"]
+        F["📄 Web form<br/>file picker, progress, download"]
+        K["🔑 createClient → actor.fetch<br/>addresses the actor by name + key"]
+        B["📦 base64 chunks<br/>JSON-RPC has no binary type"]
+        F --> K --> B
     end
 
     subgraph edge["🌐 Rivet edge"]
@@ -65,7 +68,7 @@ flowchart TB
         FS[("Filesystem<br/>RocksDB")]
     end
 
-    C -->|"POST /request/mcp<br/>x-rivet-actor: id"| G
+    B -->|"POST /request/mcp"| G
     G --> GW
     GW <-->|"WebSocket tunnel"| CR
     CR -->|"http_proxy<br/>127.0.0.1:7770"| MCP
@@ -89,7 +92,7 @@ is transient and the zone is the only reader.
 
 ```mermaid
 sequenceDiagram
-    participant C as 🖥️ Client
+    participant C as 📄 Web form
     participant G as 🛡️ Guard
     participant R as ⚙️ container-runner
     participant Z as 🔌 Godot MCP
@@ -118,6 +121,38 @@ sequenceDiagram
         Z-->>C: base64, eof
     end
 ```
+
+## The client is a web form
+
+`container-runner/examples/godot-demo/web`, following
+`examples/raw-fetch-handler`: a Vite and React page with a file picker, a
+progress bar, and a download link.
+
+It uses the sample's client pattern rather than hand-built requests:
+
+```ts
+const client = createClient(ENGINE);
+const actor = client[ACTOR_NAME].getOrCreate([zoneKey]);
+await actor.fetch("/mcp", { method: "POST", body: … });
+```
+
+so the page never constructs a URL or sets `x-rivet-actor` itself.
+
+### Why the form does not simply POST the file
+
+A plain `multipart/form-data` submit is the normal way a web form uploads, and
+it would avoid base64 entirely. It is not available here for two reasons, one
+hard and one chosen:
+
+- **A 100 MB body exceeds the 20 MiB request limit**, so a single form POST
+  cannot carry the file whatever encoding is used. Chunking is required either
+  way.
+- **Everything goes through MCP**, which is JSON-RPC, and JSON has no binary
+  type. Chunks are therefore base64, costing a third in transfer.
+
+The alternative is raw binary chunks on a second route, keeping MCP for control
+only. That saves the 33% and costs a second surface to build and secure. It was
+considered and set aside in favour of one surface.
 
 ## Why each choice
 
