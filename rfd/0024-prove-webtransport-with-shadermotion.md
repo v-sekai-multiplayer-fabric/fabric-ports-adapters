@@ -2,36 +2,39 @@
 
 ## Status
 
-Proposed. Nothing here is implemented, and nothing is measured.
+Proposed. The transport is proven; the demo is not built.
 
-Steps 1 through 6 of [RFD 0007](0007-webtransport-in-guard.md) are done, and the
-datagram transport is built. Steps 5 and 6 landed on the
-`webtransport-datagrams` branch: `serve_custom_websocket` is
-extracted so any transport can drive a custom-serve handler,
-`ProxyServiceFactory::serve_webtransport` resolves a route from the CONNECT
-request, and `run_h3_listener` is bound on the HTTPS port over UDP. The QUIC
-listener is reachable rather than merely compiled.
+Steps 1 through 6 of [RFD 0007](0007-webtransport-in-guard.md) are done, and
+both channel types are proven end to end against the release engine image. A
+real browser, driven by the Playwright MCP, opened a WebTransport session and
+got a reply on a reliable stream and on an unreliable datagram. 19 tests pass in
+`rivet-guard-core`.
 
-The datagram transport landed after them: a WebTransport connection whose target
-carries `rivet_unreliable=1` is served over QUIC datagrams instead of a stream,
-so the client leg becomes unreliable while everything past Guard stays
-unchanged. 19 tests pass in `rivet-guard-core`.
+The channel model settled as small as the requirement: **many reliable, one
+unreliable, no wire framing**. A reliable channel is one bidirectional stream,
+which QUIC keeps ordered and free of head-of-line blocking against the others. A
+stream carries only the `u16` length plus path routing header, and
+`rivet_unreliable=1` in that path tells Guard to serve the payload as session
+datagrams. An interim design with channel identifiers, sequence numbers, and RTP
+over QUIC framing was reverted, because nothing needed several unreliable
+channels.
 
-Steps 7 and 8 are not done, and the gap is now the demo itself rather than the
-transport under it. Three things remain, in dependency order:
+What remains is the demo, not the transport under it:
 
-1. **A certificate**, so a browser will connect at all. Storage and the resolver
-   are done; issuance is not. See
-   [RFD 0026](0026-terminate-tls-for-quic.md).
-2. **A dedicated IPv4 and a UDP service on Fly.** The engine's v4 is currently
-   shared, which cannot carry UDP.
-3. **The performer and viewer pages, and zone-side motion streaming.** Nothing
-   yet speaks the `u16` length plus path stream header or sets
-   `rivet_unreliable=1`, and nothing streams frames.
+1. **The performer and viewer pages, and zone-side motion streaming.** The web
+   client's `transport.ts` already exposes `reliable(path)` and
+   `unreliable(path)`, and the GDScript decoder matches the JavaScript reference
+   on all 40 `decode_video_float` cases. Nothing streams frames yet, and the
+   zone does not push datagrams back through the tunnel.
+2. **The measurement.** Two flows on one link shaped locally with `tc netem`,
+   once over each transport.
 
-The ShaderMotion decoder is ported to GDScript and matches the JavaScript
-reference on 40 of 40 `decode_video_float` cases, so the payload half is
-settled. What is missing is everything that would put a frame on the wire.
+A certificate is **not** a blocker to any of this. Locally a self-signed
+certificate accepted through Chromium's `--ignore-certificate-errors-spki-list`
+flag connects a real browser with no certificate authority. ACME
+([RFD 0026](0026-terminate-tls-for-quic.md)) and the Fly UDP path, whose
+dedicated IPv4 is already allocated, are only for a *deployed* demo that others
+open without a launch flag.
 
 Modelled on [RFD 0022](0022-glb-to-godot-scene.md), which keeps the asset
 conversion path and no longer describes a demo.

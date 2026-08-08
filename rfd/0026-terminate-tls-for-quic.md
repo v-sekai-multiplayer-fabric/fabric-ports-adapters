@@ -105,6 +105,31 @@ certificate arrives, and issuance swaps one in from a spawned task. A
 certificate already in the store is loaded inline before the resolver is
 returned, so a restart serves immediately and orders nothing.
 
+### Local development needs no certificate authority
+
+The deployed path needs a real certificate, but the demo is built and proven
+locally long before it is deployed, and there a certificate authority is
+unnecessary.
+
+A self-signed certificate that Guard serves is accepted by Chromium through the
+`--ignore-certificate-errors-spki-list=<hash>` launch flag, where the hash is
+the SHA-256 of the certificate's public key. That is a different mechanism from
+WebTransport's `serverCertificateHashes`, which pins the certificate rather than
+the key and is refused above two weeks of validity. The launch flag has no such
+limit, so `self-host/webtransport/gen-cert.sh` is enough.
+
+Two constraints make it work. The page must be served over `http://localhost` or
+another secure context, because `WebTransport` is undefined on a `file://` or
+`data:` origin. And the client must force QUIC to the server with
+`--origin-to-force-quic-on`, or Chromium never attempts it and the failure reads
+as a server fault.
+
+This is what the Playwright MCP is configured for, in
+`~/.config/rivet-wt/playwright-mcp.json`: the bundled Chromium, the two flags,
+and `file://` navigation left blocked in favour of a local HTTP server. A real
+browser then drives the demo with no ACME in the loop, which is why issuance is
+off the critical path for building it.
+
 ### The QUIC listener needs its own bind address
 
 Fly is explicit:
