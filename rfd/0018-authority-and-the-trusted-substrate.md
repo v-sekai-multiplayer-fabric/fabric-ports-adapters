@@ -250,10 +250,10 @@ the outage the gossip would be protecting against.
 - [ ] Confirm that actors have no disconnected mode. The conclusion above is
       drawn from silence plus the timeout table, not from a positive statement,
       and it is load-bearing for keeping the range map in actor state.
-- [ ] Does a max-size Rivet value fit FoundationDB? Rivet documents a 128 KiB
-      KV value ceiling; FoundationDB's value limit is 100 KB, which is smaller.
-      Depot presumably chunks, but the interaction should be verified rather
-      than assumed. Relates to [RFD 0008](0008-hot-tier-foundationdb.md).
+- [x] **Answered: actor KV chunks at 10 KB**, sized for FoundationDB
+      explicitly (`VALUE_CHUNK_SIZE`), so a 128 KiB value is ~13 chunks and the
+      naive failure does not occur. What remains untested is the driver at those
+      sizes, which is [RFD 0019](0019-large-value-conformance.md).
 - [ ] Should `promoteToAuthority` check geometric containment as well as
       capacity?
 - [ ] Are the two vacuous theorems in `ReBAC.lean` intended to be proved, or are
