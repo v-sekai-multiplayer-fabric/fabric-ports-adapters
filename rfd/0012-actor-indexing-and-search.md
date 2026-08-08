@@ -146,16 +146,74 @@ after all, and the exception is bounded and weak.
 
 ## 4. Invariants across entities
 
-There is no cross-actor transaction.
+**Constraint: relations must be linearizable.** That rules out the one-sided
+edge pattern an earlier draft of this RFD proposed, and it has exactly one
+satisfying design on this substrate.
 
-**Make the relation one-sided and derive the rest.** For a friendship, each user
-actor stores its own outgoing edges; the relation is mutual when both hold an
-edge. That is a read of two actors instead of a write to one shared table.
+### What Rivet provides, and does not
 
-The window where one side has recorded and the other has not is inherent, and is
-already true of most social graphs. It is only unacceptable where the relation
-gates something safety-critical, which should be identified explicitly rather
-than assumed absent.
+There is no cross-actor transaction. Actor storage is subspace-scoped to its
+own actor:
+
+```rust
+pub fn subspace(actor_id: Id) -> universaldb::utils::Subspace {
+    universaldb::utils::Subspace::new(&(RIVET, PEGBOARD, ACTOR_KV, actor_id))
+}
+```
+
+Workflows offer durable multi-step execution across actors, but the docs are
+explicit that they do not undo anything:
+
+> When a step throws, any `state` or `vars` mutations it made before failing are
+> never rolled back, whether the step retries or the failure is caught by
+> `tryStep` or `try`.
+
+A workflow is therefore a saga with manual compensation, not a transaction.
+
+The one linearizable unit available is a **single actor**: Pegboard guarantees
+one writer, and UniversalDB gives a serializable transaction over that actor's
+subspace.
+
+### The design that follows
+
+**The actor boundary is the transaction boundary.** Anything that must change
+atomically must be owned by one actor, which means keying the actor by the
+*relation* rather than by a participant.
+
+A friendship becomes an actor keyed by the ordered pair:
+
+```
+friendship:{min(a,b)}:{max(a,b)}
+```
+
+That actor owns both directions. Accepting a request is one write, in one
+actor, under one transaction. There is no window, because there is no second
+side to lag.
+
+The rejected alternative is the one-sided edge: each user actor holding its own
+outgoing edges, with mutuality derived by reading both. It is cheaper and it is
+not linearizable, so it is unavailable under this constraint.
+
+### What this costs
+
+Queries move from cheap to indirect. "List A's friends" is no longer a read of
+A's own state, because the edges live in relation actors. A's actor holds an
+index of relation keys, and **that index is not updated atomically with the
+relation** — the atomicity problem moves rather than disappearing.
+
+This is tolerable only because the index is a *hint*, not authority. A
+linearizable read is: consult the index, then confirm against the relation
+actor, which is the owner. A stale index can name a relation that no longer
+holds, and confirmation catches it. What it cannot do is reveal a relation the
+index has not learned about yet, so index staleness is a false-positive
+mechanism, never a false-negative one, and that asymmetry is what makes it safe.
+
+### What is still not linearizable
+
+Any sequence that genuinely spans actors and cannot be co-located. Those need a
+workflow with explicit compensation, and they are **not** linearizable however
+carefully written. They should be identified as such rather than assumed to
+inherit the guarantee, because nothing in the platform will flag it.
 
 ## Authorisation is not a cross-entity query
 
@@ -205,5 +263,8 @@ The alternatives are worth naming as rejected, because both look reasonable:
       multi-tag AND. Shard where the curve bends, not where the value overflows.
 - [ ] Resharding procedure, once the threshold is known.
 - [ ] Is unranked deterministic ordering acceptable, or is relevance required?
-- [ ] Does any relation in the system need genuine two-sided atomicity? If so,
-      this RFD does not cover it.
+- [ ] Which relations must be co-located, and therefore need their own
+      relation-keyed actor? Each one costs an index and a confirmation read.
+- [ ] Which sequences genuinely span actors and cannot be co-located? Those are
+      sagas, not transactions, and need compensation designed rather than
+      assumed.
