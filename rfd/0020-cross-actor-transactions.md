@@ -2,8 +2,9 @@
 
 ## Status
 
-Analysis. **Not recommended as specified**, for one reason that is not a matter
-of effort. A narrower version is viable and is described at the end.
+Design. Not implemented. An earlier revision of this RFD recommended against
+the feature; that recommendation was **withdrawn**, because it rested on a
+conflation described under [The error in the first analysis](#the-error-in-the-first-analysis).
 
 ## Problem
 
@@ -13,118 +14,137 @@ Workflows look transactional and are not. From `workflows.mdx`:
 > never rolled back, whether the step retries or the failure is caught by
 > `tryStep` or `try`.
 
-FoundationDB underneath provides serializable transactions over the whole
-keyspace, so the question is fair: why not expose that as a cross-actor
-transaction and make workflows linearizable?
+A developer reading that API reasonably expects atomicity across steps. The gap
+is silent, and silence is what makes it dangerous.
 
-## The storage layer is not the obstacle
+The requirement is a genuine linearizable transaction across actors, degrading
+correctly on all three backends.
 
-Actor storage is subspace-scoped by convention, not partitioned by enforcement:
+## The error in the first analysis
 
-```rust
-pub fn subspace(actor_id: Id) -> universaldb::utils::Subspace {
-    universaldb::utils::Subspace::new(&(RIVET, PEGBOARD, ACTOR_KV, actor_id))
-}
+The first version of this RFD argued the feature was impossible because
+FoundationDB aborts transactions older than five seconds while Rivet's
+hibernation wake budget is ninety seconds, so a transaction touching a sleeping
+actor could not complete.
+
+That conflates two different spans:
+
+| Span | Budget | Contains |
+|---|---|---|
+| **Acquisition** | up to 90s | waking or pausing participants |
+| **Commit** | under 5s | reads and writes over their subspaces |
+
+Nothing requires acquisition to happen *inside* the store transaction. Acquire
+first, then open a transaction that only touches storage. The slow part is
+outside, and the transaction itself is a handful of range operations.
+
+The second objection was that a store-level write is invisible to a running
+actor, because `state` is cached in memory. That is true, and it is precisely
+why acquisition exists: a participant is either asleep, in which case there is
+no cache to invalidate, or paused, in which case it is not reading.
+
+## Design
+
+### The primitive
+
+```
+transact(actor_keys, fn) -> Result<T>
 ```
 
-A UniversalDB transaction spanning two actors' subspaces is expressible today,
-and FoundationDB would serialize it correctly. Nothing in the store prevents
-this.
+1. **Order** `actor_keys` deterministically, by actor id. Uniform ordering is
+   what prevents deadlock between two overlapping transactions.
+2. **Acquire** each participant: Pegboard either confirms it is asleep, or
+   pauses it at a dispatch boundary. This may take up to the hibernation
+   budget and is not inside any store transaction.
+3. **Commit**: one UniversalDB transaction reading and writing the participants'
+   subspaces. Serializable by the driver, and short.
+4. **Release**, invalidating any in-memory state so a resumed actor reloads
+   rather than flushing a stale copy over the commit.
 
-## The obstacle is that actors are processes, not rows
+Acquisition is a lease with a timeout, so a crashed coordinator cannot wedge a
+participant indefinitely. That is the same shape as the existing lost-timeout
+and ping protocol, and should reuse it rather than introduce a second liveness
+mechanism.
 
-Two facts, each documented, that together close the door.
+### Why this degrades correctly
 
-**Actor state is cached in memory.** From `state.mdx`:
+The commit step is the only part that touches the store, and UniversalDB already
+presents one serializable contract across all three drivers:
 
-> `state` lives in memory and is persisted automatically, so reads and writes
-> have no added latency
+| Backend | Serializability via | Notes |
+|---|---|---|
+| FoundationDB | native | strict serializability |
+| PostgreSQL | `bytearange` + GiST exclusion + GC task | conflict ranges emulated |
+| Filesystem (RocksDB) | per-transaction conflict tracker | single node |
 
-So a transaction that writes an actor's subspace directly produces a
-linearizable *store* and an incoherent *actor*: the live process continues from
-its in-memory copy and overwrites the change on its next flush. The transaction
-would be correct and invisible.
+So the feature does not need per-backend logic. It needs the transaction to go
+through UniversalDB, which is what the abstraction exists for.
 
-**Waking cannot fit inside a transaction.** FoundationDB aborts transactions
-older than five seconds. Rivet documents a hibernation wake timeout of **90
-seconds**. A cross-actor transaction touching a sleeping actor therefore cannot
-complete: the wake alone may exceed the transaction lifetime by an order of
-magnitude, and whether a participant is asleep is not knowable before starting.
+Filesystem is the degenerate case: one node, so acquisition is local and the
+transaction is a local conflict-tracked commit. It is the weakest deployment and
+the easiest correctness case.
 
-That mismatch is structural. It is not solved by a faster cluster, because the
-90 second budget exists for cold starts that are legitimately slow.
+Two edges are not uniform and this feature will surface them, per
+[RFD 0014](0014-foundationdb-driver.md):
+`DatabaseError::TransactionTooOld` is unimplemented on rocksdb and postgres, and
+`error_is_transaction_too_large` returns a hardcoded `false` outside
+FoundationDB. A cross-actor transaction is larger and longer than anything the
+drivers currently see, so it is the most likely code path to hit exactly those
+gaps. **Implementing retry classification on all three drivers is a
+prerequisite, not a follow-up.**
 
-## It also contradicts a stated invariant
+### What it costs
 
-From `CLAUDE.md`:
+**It contradicts a documented invariant.** From `CLAUDE.md`:
 
-> Pegboard orchestrates actor exclusivity: at most one actor instance for a
-> given actor id may be running or accessing that actor's storage at a time.
-> This is the actor single-writer invariant… `pegboard-envoy`, `envoy-client`,
-> and remote/wasm SQLite may rely on this invariant and **must not add
-> envoy-protocol lease keys, engine-side transaction ownership, or separate
-> same-actor concurrency fences**.
+> `pegboard-envoy`, `envoy-client`, and remote/wasm SQLite may rely on this
+> invariant and must not add envoy-protocol lease keys, engine-side transaction
+> ownership, or separate same-actor concurrency fences.
 
-A cross-actor transaction is engine-side transaction ownership by definition. It
-is named as a thing not to add, and other components are documented as relying
-on its absence. Adding it is not a local change to the workflow API; it is a
-change to an invariant that depot, envoy, and the SQLite paths are built on.
+This feature is engine-side transaction ownership. The invariant is upstream
+Rivet's, and the fork is free to diverge, but everything documented as relying
+on it has to be checked rather than assumed unaffected. That is the real cost
+and it is not small.
 
-## What a full implementation would require
+**Availability.** A paused participant is unavailable for the duration. A
+transaction over many actors, or over one that is slow to wake, is a
+latency spike on every one of them.
 
-For completeness, since "can you" deserves an answer rather than a refusal:
+**Deadlock is prevented, not detected.** Deterministic ordering is what makes it
+safe. Any code path that acquires out of order reintroduces the hazard, so
+ordering belongs inside the primitive and must not be an argument.
 
-1. A participant protocol so live actors join a transaction rather than being
-   written behind. Effectively two-phase commit with actors as participants.
-2. A way to bound participation inside five seconds, which means refusing any
-   transaction whose participants are not already awake, and accepting that the
-   same transaction succeeds or fails depending on sleep state.
-3. Invalidation so a committed transaction reaches in-memory state, which means
-   a generation or version check on every actor read.
-4. Revisiting the single-writer invariant and everything documented as relying
-   on it.
+## Scope
 
-That is an engine-level project with a correctness surface larger than the
-feature, and step 2 leaves a transaction whose success depends on whether a
-participant happened to be asleep. That is not linearizable in any useful sense;
-it is a transaction that sometimes refuses.
+This is an engine change in `pegboard`, not a library change. Realistic
+sequencing:
 
-## The narrower version that does work
+- [ ] Implement `TransactionTooOld` and `error_is_transaction_too_large` for the
+      rocksdb and postgres drivers. Prerequisite, and independently useful.
+- [ ] Acquisition and lease, reusing the lost-timeout and ping protocol.
+- [ ] The `transact` primitive over UniversalDB.
+- [ ] Invalidation on release.
+- [ ] Conformance across all three backends, including the interleaving cases
+      that distinguish serializable from merely atomic.
 
-Two things are achievable and worth doing instead.
+## Alternatives that remain valid
 
-**Co-location, which is already the recommendation.** The actor boundary is the
-transaction boundary ([RFD 0012](0012-actor-indexing-and-search.md)). Anything
-requiring atomicity is owned by one actor, keyed by the relation rather than a
-participant. This is linearizable today with no engine change.
+Co-location is still correct and still cheaper for anything that can use it
+([RFD 0012](0012-actor-indexing-and-search.md)). A relation-keyed actor is
+linearizable today with no engine change, no acquisition latency, and no
+availability cost. This feature is for the cases that genuinely cannot be
+co-located.
 
-**Make workflows honest rather than transactional.** The real defect is not the
-missing guarantee, it is that the API reads as though it has one. Concretely:
-
-- Name compensation explicitly in the API, so a step declares its undo rather
-  than a comment noting that rollback does not happen.
-- Fail loudly when a workflow mutates actors it does not own without declaring
-  compensation, since that is the case that silently looks atomic.
-- Document sagas as sagas at the call site, not only in a limits page.
-
-That closes the gap that actually causes harm. A developer misreading a workflow
-as transactional is a bug that ships; a developer who cannot get a cross-actor
-transaction goes and co-locates instead.
-
-## Recommendation
-
-Do not add cross-actor transactions. The five-second transaction limit against
-a ninety-second wake budget is not an implementation difficulty, it is an
-incompatibility, and the workaround for it produces a transaction that fails
-based on scheduling.
-
-Do close the honesty gap in the workflow API, and keep co-location as the
-mechanism for anything that must be atomic.
+Making workflows *honest* is worth doing regardless: naming compensation in the
+API and failing loudly when a workflow mutates actors it does not own without
+declaring one. That closes the silent-misreading gap even where a transaction is
+not wanted.
 
 ## Open questions
 
-- [ ] Is the workflow API change worth proposing upstream, given the fork
-      already carries engine changes?
-- [ ] Are there relations that must be atomic **and** cannot be co-located? That
-      would be the case that forces this question open again, and none has been
-      identified so far.
+- [ ] Should `transact` refuse rather than wait when a participant is slow to
+      acquire, and if so on what budget?
+- [ ] Does acquisition interact with actor sleep in a way that lets a
+      transaction keep an actor awake indefinitely?
+- [ ] Which components documented as relying on the single-writer invariant
+      actually break, as opposed to merely being documented against this?
