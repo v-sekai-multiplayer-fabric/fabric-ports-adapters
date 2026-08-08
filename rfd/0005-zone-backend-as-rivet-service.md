@@ -20,6 +20,8 @@ Two decisions are already made:
 
 - **Rivet Guard replaces Caddy.** Uro sits behind Guard, not its own reverse
   proxy.
+- **Greenfield.** There is no migration. Existing accounts, content, and zones
+  do not carry over.
 - **No PostgreSQL or CockroachDB.** Specifically: no *second* stateful service
   to operate alongside Rivet. SQL itself is fine. Actor-local SQLite is SQL, and
   it is the intended store.
@@ -80,9 +82,8 @@ Uro needs all four of the mechanisms in
 | Tag search | `shared_files` by semantic tag |
 | One-sided relations | `friendships` |
 
-The one that needs confirming before anything is designed: **`semantic_tags`
-must mean discrete exact tags**, not embeddings. The term-sharded index in
-RFD 0012 assumes exact matching. Vector similarity does not shard that way.
+**Confirmed: `semantic_tags` means discrete exact tags**, not embeddings, so the
+term-sharded index in RFD 0012 applies directly.
 
 ## ReBAC is already portable
 
@@ -106,7 +107,10 @@ request from the relevant actors, or held by a authorisation actor.
 
 ## What this costs
 
-Being direct: this is a rewrite of Uro's persistence layer, not a repackaging.
+Greenfield removes the hardest part: no dual-write period, no backfill from the
+relational store into per-actor SQLite, and no compatibility with existing ids.
+
+What remains is still a rewrite of Uro's persistence layer, not a repackaging.
 Every Ecto query becomes either an actor-local query, a call to another actor, or
 a projection. The Phoenix layer, the controllers, the OpenAPI surface, and
 `re_bac` largely survive; `repo.ex` and every context that reaches through it do
@@ -142,8 +146,6 @@ should be checked rather than assumed.
       the registry is an actor that sleeps, a registration must wake it; confirm
       that wake-on-message is acceptable on that path.
 - [ ] Does `/api/v1/` keep its shape through Guard, or do clients move?
-- [ ] Is there a migration, or is this a new deployment? Existing user accounts
-      and content have to land somewhere.
 
 ## Prior art in this repo
 

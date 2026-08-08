@@ -92,8 +92,8 @@ because the shard key falls out of the query.
   different problems, and SQLite FTS5 inside one actor does not generalise to a
   growing corpus.
 - **Vector similarity is out of scope.** Nearest-neighbour search does not shard
-  by term and none of this applies. If "semantic tags" means embeddings, that
-  needs its own RFD.
+  by term and none of this applies. Confirmed not required: "semantic tags"
+  means discrete exact tags, so the term-sharded design stands.
 
 ## 4. Invariants across entities
 

@@ -93,9 +93,11 @@ converter version keeps stale derivatives from being served after an upgrade.
       which covers writing USD stages, but "any → USD" still needs per-format
       readers. OpenUSD's own plugin set covers some; the rest is unspecified.
 - [ ] **Who owns `.vrm` and `.glb`?** Either runtime could, per the note above.
-- [ ] **Is `.tscn` → USD needed at all?** It is only meaningful if Godot is an
-      authoring surface rather than a consumer. If it is not, that direction
-      drops and the Godot half becomes publish-only, which is simpler.
+- [ ] **What implements `.tscn` → USD?** Confirmed required, and
+      `fabric-flow-adapters` does not do it. This is the largest unresourced
+      piece.
+- [ ] **What carries the provenance stamp** through casync-aria-storage, so a
+      published artifact is still recognisable as derived when it comes back?
 - [ ] **Where does the actor boundary sit?** One actor per conversion, or one
       long-lived actor per asset that re-converts on change? The former is
       simpler; the latter caches. Either way the key needs the target format,
@@ -121,17 +123,37 @@ converter version keeps stale derivatives from being served after an upgrade.
 - [ ] **Idempotency.** If output is content-addressed, a repeat request should
       return the existing address rather than re-converting. That interacts with
       the actor-key choice above.
-- [ ] **Is re-ingestion blocked, or merely discouraged?** The rule above says
-      derived artifacts are never re-ingested. Whether the baker enforces that,
-      by marking outputs with their provenance and refusing them as input, or
-      whether it is left to callers, is a real choice: enforcement costs a
-      metadata channel, and the failure it prevents is silent.
 
-## Round-tripping is an anti-pattern here, not a requirement
 
-An earlier draft of this RFD treated USD → `.tscn` → USD equivalence as the hard
-problem. With the archival/transmission split it is not a problem, because that
-path should not be taken.
+## Godot authors masters, so `.tscn` has two meanings
+
+**Confirmed: Godot is an authoring surface**, not only a consumer. So a `.tscn`
+arriving at the baker is one of two entirely different things:
+
+| Kind | Origin | Direction | Treatment |
+|---|---|---|---|
+| **Source** | authored by hand in Godot | ingest to USD | becomes a master |
+| **Derived** | published by the baker from USD | already published | must never be re-ingested |
+
+They are the same file format and are not distinguishable by inspection. That
+makes provenance load-bearing rather than a nicety.
+
+**Confirmed decision: the baker stamps what it publishes and refuses it back as
+input.** The cost is a metadata channel that survives the CDN round trip. The
+failure it prevents is silent: re-ingesting a flattened publish would overwrite
+a layered master with a lossy copy, and nothing downstream would report an
+error.
+
+This also means a `.tscn` → USD exporter **is** required. `fabric-flow-adapters`
+only imports USD into Godot, so the export side has no named implementation and
+is the largest unresourced piece of this RFD.
+
+## Round-tripping a published artifact is still an anti-pattern
+
+An earlier draft treated USD → `.tscn` → USD equivalence as the hard problem,
+then a later draft ruled the path out entirely. With Godot authoring, the
+accurate statement is narrower: **ingesting a *derived* artifact is the
+anti-pattern**, while ingesting an *authored* one is the normal path.
 
 USD carries composition that no transmission format represents: sublayers,
 references, payloads, variant sets, and the `over` specs IDTX Flow's own README
@@ -141,8 +163,8 @@ master, quietly destroying the layering.
 
 The rule that follows: **derived artifacts are never re-ingested.** A `.glb`
 that came out of the baker is an output, and the archive already holds its
-source. Ingestion applies to assets arriving from outside the pipeline, and to
-`.tscn` only when Godot is genuinely the authoring surface for that asset.
+source. Enforcement is by the provenance stamp above, because with Godot
+authoring the format alone no longer tells you which kind you have.
 
 Consequences worth stating:
 
