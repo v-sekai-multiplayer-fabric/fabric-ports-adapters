@@ -1,4 +1,4 @@
-# rivet-fabric-ports-adapters
+# fabric-ports-adapters
 
 Recreate a FoundationDB-backed Rivet cluster, locally on **systemd quadlets** or
 remotely on **Fly.io**, from the same bootstrap sequence.
