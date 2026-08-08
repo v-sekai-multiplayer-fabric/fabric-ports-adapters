@@ -15,12 +15,19 @@ Two decisions are already made:
 
 - **Rivet Guard replaces Caddy.** Uro sits behind Guard, not its own reverse
   proxy.
-- **No PostgreSQL or CockroachDB.** The relational store goes away rather than
-  being migrated.
+- **No PostgreSQL or CockroachDB.** Specifically: no *second* stateful service
+  to operate alongside Rivet. SQL itself is fine. Actor-local SQLite is SQL, and
+  it is the intended store.
 
-The second is the hard one, and most of this RFD is about it. Dropping the
-database is not a storage swap; it removes the four things the database was
-doing that an actor model does not provide.
+The constraint is therefore operational rather than technical. FoundationDB is
+already there for Rivet's own state
+([RFD 0008](0008-hot-tier-foundationdb.md)), and the goal is that it stays the
+*only* stateful dependency. Anything that would add a second one — Postgres,
+CockroachDB, or an external search index — fails the same test.
+
+That rules out the easy escape hatches, so most of this RFD is about the four
+things a shared relational database was doing that a set of single-writer actors
+does not provide.
 
 ## What replaces the database
 
@@ -86,31 +93,58 @@ allocations.
 
 ### 3. Cross-entity queries
 
-This is the one with no clean answer, and it should drive the decision.
-
 Uro's API lists and searches: public zones, a user's avatars, shared files by
 semantic tag. `20260720000000_create_shared_file_semantic_tags` exists precisely
-to support search. There is no cross-actor query in Rivet, so every one of these
+to support search. There is no cross-actor query in Rivet, so each of these
 becomes a design problem rather than a `SELECT`.
-
-Three options, in increasing cost:
 
 - **Owner-scoped lists stay easy.** "A user's avatars" is a query inside one
   actor if the user actor holds the list. Most per-user listing is fine.
-- **Bounded global lists need a projection actor.** "Public zones" is a
+- **Bounded global lists are a projection actor.** "Public zones" is a
   materialised view maintained by an actor that zones notify on status change.
   Bounded because the zone count is bounded. Stale by construction, which is
-  acceptable for a server browser and not for anything transactional.
-- **Semantic search over shared files is not a projection.** Tag search over a
-  growing corpus is a search-index problem, and pretending otherwise produces a
-  single actor holding the whole catalogue. This wants a real index outside the
-  actor system.
+  fine for a server browser and not for anything transactional.
+- **Tag search shards by term, and is a better fit for actors than it looks.**
 
-**If the answer to the third is "run a search index", then the claim that the
-database is gone deserves scrutiny.** A search index is another stateful service
-to operate. It may still be the right call, because a search index is a better
-fit for tag search than a relational database was, but it should be a stated
-choice rather than an accident.
+#### Tag search: one actor per tag
+
+An earlier draft of this RFD said tag search "wants a real index outside the
+actor system". That was wrong under the stated constraint, since an external
+index is exactly the second stateful service being avoided. It was also
+pessimistic: an inverted index is one of the *more* natural things to shard
+across actors.
+
+Key an actor by the tag itself. `tag:forest` holds the posting list of shared
+file ids carrying that tag, in its own SQLite. Then:
+
+- **Single-tag search wakes exactly one actor** and reads one table. This is
+  cheaper than the equivalent scan against a shared table, not more expensive.
+- **Multi-tag AND** fans out to one actor per tag and intersects the posting
+  lists in the caller. Intersection cost is bounded by the smallest list, which
+  is the same optimisation a search engine makes.
+- **Writes are local.** Tagging a file writes to that tag's actor. There is no
+  global index lock, and unrelated tags do not contend.
+- **Idle tags cost nothing**, because their actors sleep. A long tail of rarely
+  used tags is free, which is the opposite of a shared index where every term
+  occupies the same structure.
+
+Where it gets hard, and these should be designed for rather than discovered:
+
+- **Hot tags.** A tag applied to a very large number of files puts a large
+  posting list behind one single-writer actor. The fix is a second level of
+  sharding, `tag:forest:0..n`, chosen when the list crosses a threshold. Deciding
+  the threshold and the resharding procedure is real work.
+- **Ranking.** Relevance scoring needs corpus-wide statistics such as document
+  frequency, which no single actor holds. Either accept unranked results with a
+  deterministic order, or maintain approximate global statistics in a small
+  projection actor and accept that they lag.
+- **Free text rather than tags.** Everything above works because tags are
+  discrete terms with exact matches. Prefix, fuzzy, or natural-language search
+  is a different problem, and SQLite FTS5 inside a single actor does not
+  generalise to a growing corpus. If the "semantic" in `semantic_tags` means
+  embeddings and nearest-neighbour rather than exact tags, this section does not
+  apply and the problem is materially harder. **Worth confirming before
+  designing anything.**
 
 ### 4. Multi-entity invariants
 
@@ -153,16 +187,12 @@ a projection. The Phoenix layer, the controllers, the OpenAPI surface, and
 `re_bac` largely survive; `repo.ex` and every context that reaches through it do
 not.
 
-The honest smaller alternatives:
-
-- **Move zones only.** Zones are the best fit and the highest churn. Users and
-  content stay relational for now. This gets most of the operational benefit for
-  a fraction of the work, and is reversible.
-- **Keep a relational store that is not Postgres.** The stated constraint is no
-  Postgres or CockroachDB, not no SQL. SQLite under an actor is still SQL.
-  Whether a single non-Postgres relational store is acceptable changes the
-  answer substantially, and is worth confirming before committing to full
-  decomposition.
+The honest smaller alternative is to **move zones only**. Zones are the best fit
+and the highest churn, they already self-register, and nothing else writes them.
+Users and content stay where they are for now. This removes the busiest writes
+from the database, proves the pattern, and is reversible. It does not on its own
+let the database be switched off, which is the actual goal, so it is a first
+step rather than a destination.
 
 ## Serving shape
 
@@ -176,11 +206,12 @@ should be checked rather than assumed.
 
 ## Open questions
 
-- [ ] Is "no Postgres or CockroachDB" a constraint against those products, or
-      against a shared relational store in general? The answer changes the scope
-      by an order of magnitude.
-- [ ] Does semantic tag search move to a search index, and if so, which, and who
-      operates it?
+- [ ] **Does "semantic tags" mean exact discrete tags, or embeddings?** The
+      tag-per-actor design above assumes exact terms. Vector similarity search
+      does not shard the same way and would need its own RFD.
+- [ ] What is the hot-tag threshold, and what is the resharding procedure?
+- [ ] Is unranked, deterministically ordered search acceptable, or is relevance
+      ranking required?
 - [ ] Where does the ReBAC graph live once users are actors?
 - [ ] Zone registration currently happens at zone startup against a live Uro. If
       the registry is an actor that sleeps, a registration must wake it; confirm
