@@ -2,8 +2,9 @@
 
 ## Status
 
-Partially implemented on the fork's `webtransport` branch. Steps 1 to 4 done,
-5 to 8 open. Was issue #5.
+Steps 1 to 6 done on the fork's `webtransport-datagrams` branch, plus a
+datagram transport and per-stream routing that were not in the original plan.
+Steps 7 and 8 open. Was issue #5.
 
 The plan of record is `engine/packages/guard-core/WEBTRANSPORT.md` on that
 branch. This RFD records verified status, not intent.
@@ -39,13 +40,41 @@ Checked against code rather than taken from the plan document.
 | 2. Workspace QUIC dependencies | Done | `[workspace.dependencies.quinn]`, `h3-quinn`, `h3-webtransport` in the root manifest, all wired into `guard-core` |
 | 3. QUIC endpoint with ALPN `h3` | Done | `guard-core/src/h3_server.rs` exports `ALPN_H3`, `quic_server_config`, `run_h3_listener` |
 | 4. WebSocket framing over a bidi stream | Done | `BidiStream` already implements `AsyncRead`/`AsyncWrite`, so no adapter was needed |
-| 5. Route into `ProxyService` | **Not done** | `grep -rn serve_custom_websocket engine/packages/guard-core/src/` returns nothing |
-| 6. Bind the listener in `run_server` | **Not done** | `run_h3_listener` has no call sites outside its own module and the `lib.rs` re-export |
-| 7. Godot demo | Partial | see below |
+| 5. Route into `ProxyService` | Done | `serve_custom_websocket` extracted from the `CustomServe` arm; `ProxyServiceFactory::serve_webtransport` resolves a route from the CONNECT request |
+| 6. Bind the listener in `run_server` | Done | `run_h3_listener` spawned on the HTTPS port over UDP; logged `HTTP/3 server listening addr=0.0.0.0:16443` on a live process |
+| 7. Godot demo | Partial | the zone speaks MCP over WebSocket; no WebTransport client exists |
 | 8. Measure against the 15.6 ms tick | Not done | |
 
-The transport plumbing exists and compiles. Nothing is wired into the request
-path.
+The listener binds and reaches actors. Two capabilities were added beyond the
+plan, because the plan's demo would not have proved anything:
+
+- **A datagram transport.** A connection whose target carries
+  `rivet_unreliable=1` is served over QUIC datagrams instead of a stream.
+  `WebSocketHandle` was already erased over its transport, so this fits behind
+  it and nothing downstream knows. This is the only WebSocket-impossible
+  capability, and the plan had deferred it as "a separate project".
+- **Per-stream routing.** A session CONNECTs to one path, so one session would
+  otherwise reach one actor. Each stream now names its target as a `u16` length
+  plus path before framing begins, which is what lets one connection serve two
+  zones and therefore share one congestion controller.
+
+### What blocked it for so long, and it was not the tunnel
+
+The listener could not bind because `guard/src/tls.rs` returned `Ok(None)`
+unconditionally, with the real implementation commented out since `6c92532ef`
+(2025-10-21, a monorepo reorg). `guard-core/src/server.rs` spawns the QUIC
+listener only when a certificate resolver exists, so no certificate meant no
+HTTP/3, and the cause was in a file nobody would think to read.
+
+The tunnel was assumed to be the obstacle and is not. `universalpubsub` has no
+JetStream anywhere, so NATS core is already at-most-once; the reliability lives
+above it as `ToServerWebSocketMessageAck` tracking for hibernation. In the end
+no protocol change was needed at all, because unreliability is only required on
+the client-to-Guard leg, which is the impaired one.
+
+A datagram kind was added to **runner-protocol** v8 and then reverted: that
+protocol does not reach a container actor, which speaks envoy-protocol. See
+[RFD 0024](0024-prove-webtransport-with-shadermotion.md).
 
 ## The coupling point, and why it was boxed
 

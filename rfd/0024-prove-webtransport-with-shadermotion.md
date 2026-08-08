@@ -301,7 +301,16 @@ depends on `rivetkit`, which reaches `envoy-client`, which speaks
 envoy-protocol, and guard routing returns `PegboardGateway2`. runner-protocol
 is the deprecated stack. Recording this so nobody repeats it.
 
-### TLS is the real blocker on Fly
+### TLS is the real blocker on Fly, now its own RFD
+
+The analysis below stands, and the decisions it led to are recorded in
+[RFD 0026](0026-terminate-tls-for-quic.md): a real Let's Encrypt certificate
+rather than `serverCertificateHashes`, stored in UniversalDB because the engine
+app has no volume and Let's Encrypt allows five duplicate certificates a week.
+
+The resolver and the QUIC bind address are done; issuance is not.
+
+#### The original finding
 
 Guard binds the QUIC listener only when an HTTPS address and a certificate
 resolver both exist. `guard/src/lib.rs:36` logs "No TLS configuration found,

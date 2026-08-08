@@ -2,9 +2,20 @@
 
 ## Status
 
-Implemented, **not exercised end to end.** The code path exists and compiles;
-the engine image has not been built or run under this repo, so `engine-up` has
-never completed successfully here.
+**Done, exercised end to end on 2026-08-08.** The engine image was built and
+deployed to Fly against the three-node FoundationDB cluster, and served:
+
+```
+GET https://mf-rivet-engine.fly.dev/health -> 200
+{"runtime":"engine","status":"ok","version":"2.3.7"}
+```
+
+An actor was then created on the `godot-zone` runner and answered MCP
+`tools/list` and `ping` through Guard, the gateway, and container-runner. This
+was the first time the engine had ever run.
+
+Two things were learned in the doing and are recorded below: the image needs no
+fork-specific Dockerfile, and the actor name is not arbitrary.
 
 ## Problem
 
@@ -70,3 +81,23 @@ here has run against a live engine. Specifically unverified:
 
 The shapes themselves come from a working deployment, but that deployment set
 them by hand rather than through this code.
+
+## What the first bring-up taught
+
+**No fork-specific engine image is needed.** `self-host/fly/engine/Dockerfile`
+existed to add FoundationDB, and it has been deleted. The stock
+`docker/engine/Dockerfile` already produces an FDB-capable engine, because this
+fork makes `foundationdb` a default cargo feature and the stock runtime image
+already ships `libfdb_c.so`. Build it with `BUILD_FRONTEND=true`, or
+`api-public`'s build script substitutes a placeholder page for `/ui/`.
+
+**The actor name is `game`, not the app's name.** `container-runner` registers
+its factory under `RIVET_ACTOR_NAME`, which defaults to `game`
+(`container-runner/src/main.rs:255`). Creating an actor named `zone` fails with
+`Actor factory 'zone' is not registered`, and Guard surfaces that as
+`actor_wake_retries_exceeded` after eight attempts, which reads like an
+infrastructure fault rather than a name mismatch.
+
+**Actors are addressed under `/request`.** Guard strips that prefix
+(`guard/src/routing/pegboard_gateway/mod.rs:255`); a request to `/mcp` with the
+actor headers set is a `no_route`, not a routing bug.

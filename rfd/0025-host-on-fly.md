@@ -6,10 +6,9 @@ Accepted. Split out of [RFD 0023](0023-where-to-host-the-cluster.md), which
 surveyed six options and keeps that comparison. This RFD records the choice and
 what it costs.
 
-The configuration is checked in at `self-host/fly/` and has been executed once:
-a three-node FoundationDB cluster with `double` redundancy, and the engine
-serving `{"runtime":"engine","status":"ok"}` against it. It was then destroyed to
-stop billing, so **nothing is running now**.
+Deployed and **running as of 2026-08-08**. `deploy.sh` completed in about 18
+minutes: three FoundationDB machines, the engine, and the Godot zone. Verified
+rather than assumed, below.
 
 ## Problem
 
@@ -146,11 +145,45 @@ role that must not move.
 
 ## What is verified
 
-- **The cluster ran.** Three FoundationDB nodes, `double` redundancy, engine
-  serving health against it. See [RFD 0002](0002-allocate-addresses.md) and
-  [RFD 0014](0014-foundationdb-driver.md).
-- **The sizing is checked in**, not estimated, and is the only option in RFD 0023
-  where that is true.
+`fdbcli status` on the running cluster, which is the check that distinguishes
+one cluster from three one-node clusters that each report available:
+
+```
+Redundancy mode        - double
+Coordinators           - 3
+FoundationDB processes - 3
+Machines               - 3
+Fault Tolerance        - 1 machines
+Replication health     - Healthy
+```
+
+`Machines - 3` is the line that matters. [RFD 0002](0002-allocate-addresses.md)
+exists because three isolated nodes each name themselves sole coordinator and
+each log `FDBD joined cluster`.
+
+The engine serves `/health` as 200 on FoundationDB, `/ui/` serves a real hashed
+Vite bundle rather than the placeholder, the `godot-zone` runner config is
+registered, and an actor was created and answered MCP through Guard. This closed
+[RFD 0017](0017-engine-bring-up.md).
+
+### The 2 GB sizing is tight, and FoundationDB says so
+
+This RFD priced `shared-cpu-2x` at `2gb` from the checked-in configuration. The
+running cluster reports:
+
+```
+Memory availability - 1.8 GB per process on machine with least available
+                      >>>>> (WARNING: 4.0 GB recommended) <<<<<
+```
+
+Fine for a test cluster, and a measured fact rather than an inference now.
+
+### The engine app has no volume
+
+`flyctl volumes list --app mf-rivet-engine` is empty, so its filesystem does not
+survive a restart or a machine replacement. That is not a problem for the engine
+binary, which is stateless, but it decides where TLS material has to live. See
+[RFD 0026](0026-terminate-tls-for-quic.md).
 
 ## Not verified
 
