@@ -4,14 +4,20 @@
 
 Proposed. Nothing here is implemented, and nothing is measured.
 
-Steps 1 through 6 of [RFD 0007](0007-webtransport-in-guard.md) are done. Steps 5
-and 6 landed on the `webtransport-datagrams` branch: `serve_custom_websocket` is
+Steps 1 through 6 of [RFD 0007](0007-webtransport-in-guard.md) are done, and the
+datagram transport is built. Steps 5 and 6 landed on the
+`webtransport-datagrams` branch: `serve_custom_websocket` is
 extracted so any transport can drive a custom-serve handler,
 `ProxyServiceFactory::serve_webtransport` resolves a route from the CONNECT
 request, and `run_h3_listener` is bound on the HTTPS port over UDP. The QUIC
 listener is reachable rather than merely compiled.
 
-Steps 7 and 8 are not done, and neither is the tunnel work below.
+The datagram transport landed after them: a WebTransport connection whose target
+carries `rivet_unreliable=1` is served over QUIC datagrams instead of a stream,
+so the client leg becomes unreliable while everything past Guard stays
+unchanged. 19 tests pass in `rivet-guard-core`.
+
+Steps 7 and 8 are not done.
 
 Modelled on [RFD 0022](0022-glb-to-godot-scene.md), which keeps the asset
 conversion path and no longer describes a demo.
@@ -277,46 +283,50 @@ The only figures it leans on come from
 
 ## What blocks it
 
-QUIC is not the blocker. `h3_server.rs` already calls `.enable_datagram(true)`,
-and `WebTransportSession` exposes `datagram_reader` and `datagram_sender`.
+Not the tunnel, as it turns out, and not the protocol.
 
-The tunnel is, but less than first described, and the correction is worth
-recording because it changes the cost.
+The experiment's bottleneck is the viewer's downlink between client and Guard.
+That is the only impaired link. The tunnel hop is inside the datacenter, and
+[RFD 0007](0007-webtransport-in-guard.md) estimates it at 1 to 3 ms, so
+unreliability is only needed on the client leg.
 
-**The transport underneath is already at-most-once.** `universalpubsub` has
-memory, NATS, and postgres drivers, and there is no JetStream anywhere in the
-package. NATS core does not retransmit, so nothing at that layer has to be
-persuaded to drop.
+`WebSocketHandle` is already erased over its transport, so a datagram-backed
+`Stream` and `Sink` satisfy it and **nothing downstream needs to know**. No
+protocol version, no gateway change, no `container-runner` change, and the zone
+receives ordinary frames without learning which transport carried them.
 
-**The reliability lives above it.** The tunnel adds its own acknowledgement
-layer for hibernation: `ToServerWebSocketMessageAck` in the v7 schema, tracked
-in `shared_state.rs` as `WebSocketMessageNotAcked` against
-`gateway_hws_message_ack_timeout_ms`. That is what makes a WebSocket message
-survive an actor hibernating, and it is what a datagram must bypass.
+An earlier attempt added a datagram kind to **runner-protocol** v8 and was
+reverted. That protocol does not reach a container actor: `container-runner`
+depends on `rivetkit`, which reaches `envoy-client`, which speaks
+envoy-protocol, and guard routing returns `PegboardGateway2`. runner-protocol
+is the deprecated stack. Recording this so nobody repeats it.
 
-So the work is to add a message kind that is deliberately excluded from ack
-tracking, not to build a new delivery mode through a broker that refuses to drop
-things. The broker already drops things.
+### TLS is the real blocker on Fly
 
-Two further facts for whoever picks this up. The protocol is versioned BARE at
-`PROTOCOL_MK2_VERSION = 7`, so a new kind means a `v8.bare` schema with
-field-by-field converters and a matching bump of the TypeScript
-`PROTOCOL_VERSION`, per the repository's own rule against editing a published
-schema. And `guard` depends on **both** `pegboard-gateway` and
-`pegboard-gateway2`, so check which one carries a given deployment before
-changing either.
+Guard binds the QUIC listener only when an HTTPS address and a certificate
+resolver both exist. `guard/src/lib.rs:36` logs "No TLS configuration found,
+HTTPS will not be enabled" otherwise.
 
-The work, in order:
+Fly terminates TLS at its edge and forwards plain HTTP to the app, so
+`guard.https` is unset and the listener never binds. QUIC cannot work this way
+even in principle: Fly's UDP forwarding passes raw packets, so the handshake has
+to terminate inside the container.
 
-1. ~~Steps 5 and 6 of [RFD 0007](0007-webtransport-in-guard.md).~~ Done. The
-   listener is bound and WebTransport streams route to actors.
-2. A `v8.bare` datagram kind excluded from ack tracking, plus stream
-   demultiplexing so one session reaches both zones.
-3. The `MotionDecoder.js` port, and wiring it to `godot-humanoid`.
-4. The measurement.
+Running the experiment on Fly therefore needs, beyond the dedicated IPv4 from
+[RFD 0025](0025-host-on-fly.md):
 
-Step 2 is still the largest piece, mostly because a protocol version bump has to
-be done properly rather than because the broker fights it.
+- Certificates inside the container, populating `guard.https.tls`, which is four
+  paths: `actor_cert_path`, `actor_key_path`, `api_cert_path`, `api_key_path`.
+- A UDP service on the same port as HTTPS.
+- A client that accepts the certificate. A short-lived self-signed certificate
+  plus WebTransport's `serverCertificateHashes` avoids provisioning a real one,
+  and browsers accept that path.
+
+**This is an argument for measuring locally first.** `tc netem` shapes a local
+link precisely and costs nothing, and the impairment is the whole point of the
+experiment. The Fly run adds real-network realism, which matters for
+[RFD 0007](0007-webtransport-in-guard.md) step 8, but it is not where this
+should start.
 
 ## Deferred
 
