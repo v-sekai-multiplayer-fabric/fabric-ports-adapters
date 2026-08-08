@@ -132,16 +132,23 @@ requires. Twenty-two tests pass in `rivet-guard`, covering the empty slot, a
 certificate swapped in after startup, malformed and missing inputs erroring
 rather than silently disabling TLS, and the key layout.
 
+The resolver is also proven above the unit level: a real browser completed a
+WebTransport handshake against the release image using this resolver and a
+self-signed certificate, accepted through Chromium's SPKI-list flag. So the TLS
+path serves QUIC, not only HTTPS. See
+[RFD 0007](0007-webtransport-in-guard.md).
+
 ## Not verified
 
 - **Issuance.** No certificate has been ordered. The ACME client, the
   `/.well-known/acme-challenge/` route, and the single-flight lock are not
   written.
-- **UDP end to end on Fly.** `flyctl ips list --app mf-rivet-engine` shows the
-  v4 address is **shared**, and UDP requires a dedicated one; there is also no
-  UDP service declared. So even with a certificate in place, no QUIC packet
-  would reach the listener. This is independent of issuance and can be fixed in
-  parallel.
+- **UDP end to end on Fly.** A dedicated IPv4, `37.16.24.183`, is now allocated
+  ($2/month), and `self-host/fly/engine/fly.toml` declares the UDP service on
+  443 with `quic_host = fly-global-services`. What remains unverified is the
+  deploy itself: `flyctl ssh console --command "ss -ulnp"` should show UDP 443
+  bound to the `fly-global-services` address, and that check needs a certificate
+  in place first, because Guard skips the QUIC listener when no resolver exists.
 - **That a restart orders nothing.** This is the behaviour protecting the rate
   limit, so it deserves an explicit test rather than an assumption.
 

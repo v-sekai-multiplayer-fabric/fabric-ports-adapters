@@ -4,7 +4,10 @@
 
 Steps 1 to 6 done on the fork's `webtransport-datagrams` branch, plus a
 datagram transport and per-stream routing that were not in the original plan.
-Steps 7 and 8 open. Was issue #5.
+Both transports are proven end to end against the release engine image: a
+headless Chromium opened a WebTransport session and got a reply on both a
+reliable stream and an unreliable datagram. Steps 7 and 8, the ShaderMotion
+demo and the measurement, are open. Was issue #5.
 
 The plan of record is `engine/packages/guard-core/WEBTRANSPORT.md` on that
 branch. This RFD records verified status, not intent.
@@ -45,8 +48,34 @@ Checked against code rather than taken from the plan document.
 | 7. Godot demo | Partial | the zone speaks MCP over WebSocket; no WebTransport client exists |
 | 8. Measure against the 15.6 ms tick | Not done | |
 
-The listener binds and reaches actors. Two capabilities were added beyond the
-plan, because the plan's demo would not have proved anything:
+The listener binds and reaches actors, and both channel types answer a real
+browser.
+
+### Verified against a real browser and the release image
+
+A headless Chromium, launched with `--origin-to-force-quic-on` and the
+certificate's SPKI hash, ran against the engine's release Docker image, not a
+`cargo` debug build:
+
+- **Reliable, over a stream.** The stream sent its 2-byte length plus path
+  header, then a WebSocket-framed `ping`, and read back `pong`. Guard logged the
+  session, the route resolution, and the `CustomServe` dispatch.
+- **Unreliable, over a datagram.** The stream sent a header carrying
+  `rivet_unreliable=1`, then the payload travelled as a session datagram. Guard
+  logged `received a datagram len=...` and answered.
+
+A live page pinging each channel at 10 Hz held zero loss on loopback, which is
+expected there; the drop behaviour only shows under an impaired link.
+
+One lesson worth keeping. The datagram path first appeared broken, and the fault
+was the test, not the transport. A datagram carries raw application bytes with
+no WebSocket framing, so a client must send raw bytes and a handler must accept
+`Message::Binary`. The stream path parses framing, so the same hand-built frame
+worked there and hid the mismatch. The two paths are not interchangeable at the
+byte level, only at the `WebSocketHandle` level.
+
+Two capabilities were added beyond the plan, because the plan's demo would not
+have proved anything:
 
 - **A datagram transport.** A connection whose target carries
   `rivet_unreliable=1` is served over QUIC datagrams instead of a stream.
@@ -57,6 +86,15 @@ plan, because the plan's demo would not have proved anything:
   otherwise reach one actor. Each stream now names its target as a `u16` length
   plus path before framing begins, which is what lets one connection serve two
   zones and therefore share one congestion controller.
+
+The channel model ended up as small as the requirement: **many reliable
+channels, one unreliable**. A reliable channel is a bidirectional stream, which
+QUIC already keeps ordered and free of head-of-line blocking against the others,
+so reliable multiplexing was free. The unreliable channel is the session
+datagrams, which need no framing because there is only one. An interim design
+that added channel identifiers, sequence numbers, and RTP over QUIC framing was
+reverted: nothing needed several unreliable channels, and the machinery was cost
+without a caller.
 
 ### What blocked it for so long, and it was not the tunnel
 
