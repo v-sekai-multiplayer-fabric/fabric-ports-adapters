@@ -97,7 +97,7 @@ flowchart TB
     MCP --> CONV
     CONV -->|"RSCC scene"| MCP
 
-    VR -.->|"entity packets<br/>100 bytes, HLC"| GQ
+    VR -.->|"pose datagrams<br/>64 Hz, lossy by design"| GQ
     GQ -.-> GW
     GW --> SIM
     CONV -->|"scene loaded into"| SIM
@@ -107,26 +107,83 @@ flowchart TB
 ```
 
 Solid edges are paths that work today. **Dotted edges through `Guard — QUIC` do
-not exist yet**: the QUIC listener is built but never bound, so player traffic
-has no WebTransport route. See [RFD 0007](0007-webtransport-in-guard.md).
+not exist yet**, and they are blocked in two places rather than one: the QUIC
+listener is built but never bound, and the tunnel behind it has no datagram
+frame. See [RFD 0007](0007-webtransport-in-guard.md).
 
-### Why players and creators want different transports
+### What a WebTransport demo has to prove
 
-| | Creator upload | Player session |
-|---|---|---|
-| Payload | one 100 MB glb | 100-byte entity packets |
-| Rate | once | every 15.6 ms |
-| Ordering | must be exact | causal is enough |
-| Loss | fatal | tolerable, the next tick supersedes |
-| Transport | HTTP over TCP, chunked | WebTransport over QUIC |
+A demo that runs MCP over a WebTransport stream proves nothing. A WebTransport
+bidirectional stream is reliable and ordered, exactly like a WebSocket, so
+moving the asset path onto one is a port rather than a demonstration. The bar is
+higher: **the demo must be something WebSocket cannot do at all.**
 
-TCP is right for the asset path and wrong for the simulation: head-of-line
-blocking on one connection stalls every entity behind one lost packet.
-WebTransport applies it per stream instead, which is the whole reason
-[RFD 0007](0007-webtransport-in-guard.md) exists.
+Two candidates, and only one survives the test.
 
-So the asset pipeline in this RFD deliberately uses the transport that already
-works, and the player path is blocked on wiring the one that does not.
+**Independent streams. Rejected.** The obvious pitch is uploading a 100 MB glb
+on one stream while control messages flow on another, with no head-of-line
+blocking between them. But a client can open two WebSockets, get two TCP
+connections, and obtain the same isolation. WebTransport is cheaper here, one
+handshake and one congestion controller instead of two, and cheaper is not
+impossible. This fails the bar.
+
+**Unreliable datagrams. The real answer.** WebSocket has no unreliable mode.
+None. There is no flag, no option, no workaround, because it is defined over a
+reliable ordered byte stream.
+
+That gap is the entire social VR problem. At a 15.6 ms tick a pose that arrives
+late is not merely useless, it is worse than nothing, because the next tick has
+already superseded it. TCP cannot know that. It retransmits the stale pose,
+and it holds every fresher pose behind it until the retransmission lands. Loss
+becomes latency for the whole stream, and the avatar visibly stalls rather than
+degrades.
+
+Datagrams invert it. A lost pose is simply gone, the next one is already on the
+way, and nothing behind it waits. **Discarding late data is the feature**, and it
+is the one thing only WebTransport offers.
+
+### The demo
+
+Avatars in a zone, poses at 64 Hz as WebTransport datagrams, authoritative
+state broadcast back the same way. Run the identical scenario over WebSocket.
+Impair the link with `tc netem` at 2% loss and 50 ms RTT, which is an ordinary
+mobile network rather than a pathological one.
+
+Measure p95 and p99 of pose-to-render latency against the 15.6 ms tick.
+
+The expected result is that WebSocket p99 climbs to multiples of RTT under loss
+while WebTransport stays flat and simply drops poses. If both stay flat, the
+demo has disproved its own premise and is still worth having, because
+`rfd/0023` chose the transport on this reasoning.
+
+Asset conversion stays on TCP, where a 100 MB upload genuinely wants
+reliability and ordering. It is what puts content in the zone, not the thing
+being demonstrated.
+
+### What blocks it
+
+QUIC is not the blocker. `h3_server.rs` already calls `.enable_datagram(true)`,
+and `WebTransportSession` exposes `datagram_reader` and `datagram_sender`.
+
+The tunnel is. `pegboard-gateway` carries traffic over `universalpubsub` in a
+WebSocket shape in both directions, `tunnel_to_ws_task.rs` and
+`ws_to_tunnel_task.rs`, and contains no datagram concept at all. A datagram
+arriving at Guard has nowhere to go.
+
+So the work is, in order:
+
+1. Steps 5 and 6 below. Nothing reaches an actor over QUIC until the listener is
+   bound and routed, whatever the payload.
+2. A datagram frame in the tunnel, and a lossy path for it. This is the
+   substantial piece and the one `h3_server.rs` calls "a separate change".
+   Reliable delivery over `universalpubsub` would defeat the purpose, so the
+   tunnel has to be allowed to drop.
+3. Zone-side send and receive, and a Godot client using `WebTransportPeer`
+   datagrams.
+4. The measurement above.
+
+Step 2 is where the honesty is. It is not a port of existing plumbing, it is a
+new delivery mode through a broker that currently guarantees the opposite.
 
 ### What is actually built, verified against the code
 
