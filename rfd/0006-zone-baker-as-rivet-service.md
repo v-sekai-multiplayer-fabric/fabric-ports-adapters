@@ -87,6 +87,45 @@ converter version)` rather than the asset alone: two requests for the same asset
 in *different* formats are different work and should not share an actor, and the
 converter version keeps stale derivatives from being served after an upgrade.
 
+## There is no job protocol to design
+
+RivetKit already provides a durable per-actor queue. Queue messages persist
+under the `_rivet_queue` KV prefix, so they survive sleep, drain, and
+rescheduling, and the framework serves `/queue/*` routes.
+
+The primitives map onto a baker directly:
+
+| Primitive | Role |
+|---|---|
+| `c.queue.send(name, req)` | submit |
+| `c.queue.next({names, timeout})`, `nextBatch`, `iter` | the actor consumes |
+| `c.broadcast(...)` | progress and completion to subscribers |
+| `c.keepAwake(promise)` | hold the actor up while converting |
+| `c.saveState()` | checkpoint across a drain |
+| `c.schedule.after(...)` | retry and timeout |
+
+**Decision: one queue per baker actor, keyed by the conversion.** The actor key
+above already identifies exactly one piece of work, so its queue holds at most
+that job. Deduplication falls out of the key rather than needing a dispatcher:
+two identical requests address the same actor. Idle conversions sleep and cost
+nothing.
+
+The rejected alternative was a single dispatcher actor owning one global queue.
+It would give ordering and a natural place for rate limits, at the cost of a
+single-writer bottleneck on every submission.
+
+### `request_lifespan` is not a job constraint
+
+`pegboard-outbound` computes `sleep_until_drain = request_lifespan -
+drain_grace_period`, so the **runner's outbound request** recycles on that timer
+regardless of what actors are doing. It bounds the request, not the work. A job
+held in a durable queue and checkpointed with `saveState` survives the recycle,
+so the constraint in [RFD 0010](0010-serverless-runner-configuration.md) is
+about runner plumbing rather than about how long a bake may take.
+
+Holding a synchronous connection for the duration of a bake would fight this.
+The queue does not.
+
 ## Open questions
 
 - [ ] **Who owns ingest?** `fabric-stage-runtime` supplies OpenUSD to Elixir,
@@ -98,16 +137,9 @@ converter version keeps stale derivatives from being served after an upgrade.
       piece.
 - [ ] **What carries the provenance stamp** through casync-aria-storage, so a
       published artifact is still recognisable as derived when it comes back?
-- [ ] **Where does the actor boundary sit?** One actor per conversion, or one
-      long-lived actor per asset that re-converts on change? The former is
-      simpler; the latter caches. Either way the key needs the target format,
-      per the note above.
-- [ ] **Job duration versus `request_lifespan`.** A serverless runner config has
-      a `request_lifespan`, and `drain_grace_period` must be strictly less than
-      it ([RFD 0003](0003-engine-configuration.md)). A bake that outlives the
-      lifespan needs either a longer lifespan or an async submit-and-poll
-      protocol. This should be decided before the protocol is designed, because
-      it changes the protocol.
+- [ ] **Does repair get its own actor key?** A repair produces a new master from
+      a derivative, so it is not keyed like a publish. Probably keyed by the
+      derivative's address plus the repair operation.
 - [ ] **Where does output live?** casync-aria-storage is named as the CDN.
       Whether the baker writes to it directly or hands bytes to something else
       is unspecified. Archive and derivatives likely want different retention,
@@ -117,9 +149,6 @@ converter version keeps stale derivatives from being served after an upgrade.
       rather than left open. `.vrm` and `.glb` arriving as *input* is plausible
       for third-party assets, and is a different case from the same formats
       being emitted as output.
-- [ ] **Is WebSocket the right surface for a job queue?** A long-running bake
-      over a held WebSocket ties job liveness to connection liveness. Submitting
-      over HTTP and streaming progress over WebSocket may fit better.
 - [ ] **Idempotency.** If output is content-addressed, a repeat request should
       return the existing address rather than re-converting. That interacts with
       the actor-key choice above.
@@ -138,11 +167,26 @@ arriving at the baker is one of two entirely different things:
 They are the same file format and are not distinguishable by inspection. That
 makes provenance load-bearing rather than a nicety.
 
-**Confirmed decision: the baker stamps what it publishes and refuses it back as
-input.** The cost is a metadata channel that survives the CDN round trip. The
-failure it prevents is silent: re-ingesting a flattened publish would overwrite
-a layered master with a lossy copy, and nothing downstream would report an
-error.
+**Confirmed decision: the baker stamps what it publishes, and ingest refuses
+stamped input.** The cost is a metadata channel that survives the CDN round
+trip. The failure it prevents is silent: re-ingesting a flattened publish would
+overwrite a layered master with a lossy copy, and nothing downstream would
+report an error.
+
+**Repair is a third verb, not a special case of ingest.** Taking a slightly
+corrupted `.tscn` back to USD, running tri-to-quad or similar remeshing, and
+writing a new master is a wanted workflow. It takes derived input by design, so
+it cannot go through an ingest path that refuses stamped artifacts, and it
+should not weaken that refusal either. Three operations rather than two:
+
+| Verb | Input | Output | Notes |
+|---|---|---|---|
+| **ingest** | unstamped source | new master | refuses stamped input |
+| **publish** | master | stamped derivative | lossy by design |
+| **repair** | stamped derivative | new master | explicit; records that its lineage passed through a lossy step |
+
+The cost is more surface to design. The benefit is that "I meant to do this" and
+"I did this by accident" stop being indistinguishable.
 
 This also means a `.tscn` → USD exporter **is** required. `fabric-flow-adapters`
 only imports USD into Godot, so the export side has no named implementation and
