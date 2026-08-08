@@ -68,6 +68,77 @@ database and is independently useful.
 
 `friendships` does not fit the table, and is dealt with below.
 
+## Zones have no registry, because authority is computed
+
+The obvious design gives zones a registry actor: zones register at startup, the
+registry holds the list, clients read it. That is what Uro does today with a
+`zones` table.
+
+It is the wrong shape, and
+[lean-rebac-core](https://github.com/v-sekai-multiplayer-fabric/lean-rebac-core)
+already formalises why. `Rebac/core/NoGod.lean` replaces three assumptions:
+
+| Replaced | With |
+|---|---|
+| God-clock (global tick) | `VClock`, a per-node causal counter |
+| Coordinator-assigned range | geometric containment in Hilbert space |
+| Deterministic serialization | causal partial order |
+
+Authority is a pure function, not an assignment:
+
+```lean
+/-- Authority for an entity at Hilbert code `h`: find the zone whose range
+    contains h in the gossip-learned map.  Pure geometry; no message needed. -/
+def geometricAuthority {n : Nat} (view : NodeView n) (h : Nat) : Option ZoneRange :=
+  view.ranges.find? (fun r => r.contains h)
+```
+
+The authoritative zone for an entity is whichever zone's Hilbert range contains
+`hilbert3D(entity.pos)`. Nobody grants it. Everyone computes it from the same
+public rule, and `authority_unique` proves that under `DisjointRanges` exactly
+one zone contains a given code.
+
+### Migration is a consequence, not a protocol
+
+An entity moving across a range boundary changes `hilbert3D(pos)`, so a
+different range contains it, so authority has transferred. There is no handoff
+message, no lock, and no coordinator round trip: both sides reach the same
+conclusion independently because it is the same pure function over the same map.
+
+### Why this is the zero-trust shape
+
+A registry holds assertions about entities it is not, and cannot independently
+verify them. Compromise it and every zone can be forged. That is an implicit
+trust zone in the sense OMB M-22-09 targets, and it is the "god" the Lean file
+is named against.
+
+Geometric authority removes the question rather than answering it. There is no
+authority to verify against, because the answer is computable by anyone and
+forgeable by no one.
+
+### What is not proven
+
+`geometric_authority_unique` takes `DisjointRanges view.ranges` as a hypothesis,
+and `view` is per-node and gossip-learned. Uniqueness therefore holds **within a
+view**. Two nodes whose gossip has not converged can transiently disagree about
+authority.
+
+That is conceded by the design rather than overlooked: `VClock.concurrent`
+exists precisely because concurrent operations may be serialized in either
+order. Consistency here is causal, not linearizable. "No coordinator" and
+"everyone always agrees" are different claims, and only the first is proven.
+
+Anything requiring a single global answer at a single instant does not belong on
+this path.
+
+### Consequences for the browser listing
+
+A listing of public zones remains a projection with **no authority**
+([RFD 0012](0012-actor-indexing-and-search.md)). If it is stale, the
+authoritative answer is still geometric. It must never become an authorisation
+decision point: a client that finds a zone in the listing still authenticates to
+that zone.
+
 ## The four things the database was doing
 
 Uro needs all four of the mechanisms in
@@ -160,9 +231,9 @@ should be checked rather than assumed.
       against a cached subject still leaves an implicit trust zone. Removing it
       means presenting a credential per action, which changes the client
       protocol. Worth deciding the two halves separately.
-- [ ] Zone registration currently happens at zone startup against a live Uro. If
-      the registry is an actor that sleeps, a registration must wake it; confirm
-      that wake-on-message is acceptable on that path.
+- [ ] Does the gossip range map live in Rivet actors, or beside them? The Lean
+      model assumes a `NodeView` per node; how that is populated on this
+      substrate is unspecified.
 - [ ] Does `/api/v1/` keep its shape through Guard, or do clients move?
 
 ## Prior art in this repo
