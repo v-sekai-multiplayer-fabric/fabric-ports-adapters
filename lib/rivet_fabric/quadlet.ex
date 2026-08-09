@@ -14,8 +14,18 @@ defmodule RivetFabric.Quadlet do
   alias RivetFabric.Shell
 
   @unit_dir Path.expand("~/.config/containers/systemd")
+  @state_dir Path.expand("~/.local/share/rivet-fabric/nodes")
 
   def unit_dir, do: @unit_dir
+
+  @doc """
+  Host directory for a node's files that are bind-mounted into the container.
+
+  Used for config a container must have at start, such as the engine topology,
+  which is delivered as a read-only bind mount rather than written into a
+  running container.
+  """
+  def node_state_dir(app, name), do: Path.join(@state_dir, unit_name(app, name))
 
   @doc "The container name for a node, which is also its DNS name on the network."
   def container_name(app, name), do: unit_name(app, name)
@@ -91,6 +101,14 @@ defmodule RivetFabric.Quadlet do
         _ -> []
       end
 
+    # Read-only bind mounts of host paths, for config a container needs at
+    # start. `Z` relabels for SELinux, which rootless podman on Fedora enforces;
+    # without it the container cannot read the file.
+    mounts =
+      spec
+      |> Map.get(:mounts, [])
+      |> Enum.map(fn {host, guest} -> "Volume=#{host}:#{guest}:ro,Z" end)
+
     # A static address is not a nicety. podman reassigns addresses on restart,
     # and a FoundationDB coordinator list records them, so a restart would
     # otherwise orphan the cluster from its own coordinators.
@@ -120,6 +138,7 @@ defmodule RivetFabric.Quadlet do
       ] ++
         network ++
         volume ++
+        mounts ++
         publish ++
         env ++
         command ++

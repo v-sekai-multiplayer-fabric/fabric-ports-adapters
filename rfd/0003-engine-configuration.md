@@ -2,8 +2,10 @@
 
 ## Status
 
-Accepted. Encoded in `RivetFabric.Domain.Cluster`. Derived from a working
-deployment, **not** from a run of this repo's engine image.
+Accepted. Encoded in `RivetFabric.Domain.Cluster` and `RivetFabric.Bootstrap`.
+The topology and datacenter constraints were derived from a working deployment
+outside this repo; the FoundationDB and start-ordering constraints are confirmed
+by the local podman quadlet bring-up in this repo.
 
 Serverless runner configuration was split out into
 [RFD 0010](0010-serverless-runner-configuration.md). This RFD now covers only
@@ -30,9 +32,11 @@ RIVET__TOPOLOGY__DATACENTERS__DEFAULT__PEER_URL=...
 fails startup with `failed to deserialize config`, and it still fails with every
 required field supplied (`name`, `datacenter_label`, `is_leader`, both URLs).
 
-The engine merges every config file in `/etc/rivet`, so the topology is written
-there as JSON. This constraint is the only reason `node_write_file` exists in
-the substrate port ([RFD 0001](0001-substrate-port.md)).
+The engine merges every config file in `/etc/rivet`, so the topology is a JSON
+file placed there. It is delivered as a **read-only bind mount at container
+creation**, the podman equivalent of the Fly deploy's
+`flyctl machine update --file-literal`. It is not written into a running
+container, for the reason in "Config must be complete at first start" below.
 
 ### `name` must be omitted from a datacenter
 
@@ -58,6 +62,34 @@ The default is `http://127.0.0.1:6420`, which an envoy resolves inside its
 the engine itself reports healthy and serves requests normally. The symptom
 appears entirely on the runner side, which is the wrong place to look.
 
+
+### FoundationDB is configured by addresses, not a mounted cluster file
+
+The engine takes `RIVET__FOUNDATIONDB__ADDRESSES` (comma-separated
+`ip:port` coordinators) plus `CLUSTER_DESCRIPTION`, `CLUSTER_ID`, and
+`CLUSTER_FILE_WRITE_PATH`, and **writes its own `fdb.cluster` file at startup**
+via `resolve_cluster_file`. This is how the Fly deploy configures it, and it is
+the same on podman: the mechanism is in the engine binary, not the substrate.
+
+The coordinators passed are exactly the set the FoundationDB nodes agreed on, so
+the engine reaches the same cluster without a cluster file being injected. There
+is no reason to mount a cluster file or to write one into the container.
+
+### Config must be complete at first start
+
+The engine exits immediately if it cannot open FoundationDB, with
+
+```
+foundationdb error 1515: No cluster file found in current directory or default location
+```
+
+Under `Restart=always` this becomes a crash loop that systemd abandons after a
+few attempts (`Start request repeated too quickly`). So all config, both the
+FoundationDB addresses and the topology file, is present the moment the
+container starts. An earlier version started the engine first and delivered
+config afterwards with `podman cp` plus a restart; the engine never survived
+long enough to be reconfigured, and `podman cp` raced the container being
+recreated. Delivering config up front removes the loop rather than racing it.
 
 ## Consequences
 

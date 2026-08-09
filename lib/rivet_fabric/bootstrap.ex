@@ -179,32 +179,30 @@ defmodule RivetFabric.Bootstrap do
   @doc """
   Bring up the Rivet engine against the FoundationDB cluster.
 
-  Two things have to be written into the node rather than passed as environment
-  variables:
+  Config is complete at the moment the container starts. This is deliberate. An
+  earlier version started the engine first and delivered config afterwards with
+  `podman cp` plus a restart. The engine has no cluster file at first start, so
+  it exits immediately with `foundationdb error 1515`, and `Restart=always`
+  crash-loops it until systemd gives up. Delivering everything up front removes
+  the loop rather than racing it.
 
-  * The topology, because `topology.datacenters` deserializes through an
-    untagged enum that the env-var source cannot merge into. See
-    [RFD 0003](../../rfd/0003-engine-configuration.md).
-  * The cluster file, so the engine talks to the same coordinators the nodes
-    agreed on rather than deriving its own.
+  The two mechanisms mirror the Fly deploy (`self-host/fly/deploy.sh`), which is
+  the proven reference for this fork:
+
+  * FoundationDB is configured by **coordinator addresses**, not a mounted
+    cluster file. The engine's `resolve_cluster_file` writes its own cluster
+    file from `RIVET__FOUNDATIONDB__ADDRESSES` at startup, so the same
+    coordinators the nodes agreed on are reached without injecting a file.
+  * The topology is a **file bind-mounted at creation**, because
+    `topology.datacenters` deserializes through an untagged enum that the
+    env-var source cannot merge into. See
+    [RFD 0003](../../rfd/0003-engine-configuration.md). Fly delivers it with
+    `flyctl machine update --file-literal`; podman's equivalent is a read-only
+    bind mount into `/etc/rivet`, which the engine loads as a config directory.
   """
   def engine(spec, image, coordinators) do
     name = spec.engine.app
     host = Quadlet.container_name(spec.engine.app, name)
-
-    :ok =
-      Quadlet.node_ensure(%{
-        app: spec.engine.app,
-        name: name,
-        image: image,
-        network: spec.network,
-        ip: spec.engine.ip,
-        publish: [{spec.engine.port, spec.engine.port}],
-        env: %{
-          "RIVET__FOUNDATIONDB__CLUSTER_FILE" => "/etc/foundationdb/fdb.cluster",
-          "RIVET__AUTH__ADMIN_TOKEN" => spec.engine.admin_token
-        }
-      })
 
     # public_url must be reachable from other containers. The default is
     # http://127.0.0.1:6420, which an envoy resolves inside its own container.
@@ -215,28 +213,27 @@ defmodule RivetFabric.Bootstrap do
         peer_port: spec.engine.peer_port
       )
 
-    cluster_file =
-      Cluster.cluster_file(
-        spec.fdb.cluster_description,
-        spec.fdb.cluster_id,
-        coordinators
-      )
+    topology_host = Path.join(Quadlet.node_state_dir(spec.engine.app, name), "topology.json")
+    File.mkdir_p!(Path.dirname(topology_host))
+    File.write!(topology_host, JSON.encode!(topology) <> "\n")
 
     with :ok <-
-           Quadlet.node_write_file(
-             spec.engine.app,
-             name,
-             "/etc/rivet/topology.json",
-             JSON.encode!(topology) <> "\n"
-           ),
-         :ok <-
-           Quadlet.node_write_file(
-             spec.engine.app,
-             name,
-             "/etc/foundationdb/fdb.cluster",
-             cluster_file <> "\n"
-           ),
-         :ok <- Quadlet.node_restart(spec.engine.app, name),
+           Quadlet.node_ensure(%{
+             app: spec.engine.app,
+             name: name,
+             image: image,
+             network: spec.network,
+             ip: spec.engine.ip,
+             publish: [{spec.engine.port, spec.engine.port}],
+             mounts: [{topology_host, "/etc/rivet/topology.json"}],
+             env: %{
+               "RIVET__FOUNDATIONDB__ADDRESSES" => coordinators,
+               "RIVET__FOUNDATIONDB__CLUSTER_DESCRIPTION" => spec.fdb.cluster_description,
+               "RIVET__FOUNDATIONDB__CLUSTER_ID" => spec.fdb.cluster_id,
+               "RIVET__FOUNDATIONDB__CLUSTER_FILE_WRITE_PATH" => "/etc/foundationdb/fdb.cluster",
+               "RIVET__AUTH__ADMIN_TOKEN" => spec.engine.admin_token
+             }
+           }),
          {:ok, body} <- Http.await_ok(engine_url(spec) <> "/health") do
       {:ok, body}
     end
