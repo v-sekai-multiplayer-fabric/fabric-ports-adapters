@@ -2,10 +2,12 @@
 
 ## Status
 
-Proposed, and the cheapest item on the list. Originally bundled with a
-cold-storage tier, which has since been removed as having no consumer. Backup
-survived that removal because it protects data that exists rather than data that
-might.
+Mechanism proven live on the local quadlet substrate: continuous `fdbbackup`
+writing through versitygw into a volume, a snapshot completing and its bytes
+landing on disk. Not yet codified into the bootstrap, and restore is not yet
+verified. Originally bundled with a cold-storage tier, which has since been
+removed as having no consumer. Backup survived that removal because it protects
+data that exists rather than data that might.
 
 ## Problem
 
@@ -59,10 +61,34 @@ A cold tier could reuse the same endpoint, but sizing and durability should be
 decided per use rather than shared by default, given the profile difference
 above.
 
+## What the live proof settled
+
+Three things that were not guessable and each cost an attempt:
+
+- **The volume is the object store.** versitygw's `posix /data` backend maps a
+  top-level directory to a bucket, so creating the bucket is `mkdir /data/<name>`
+  and the S3 objects are plain files under it. This is the whole point of "an S3
+  emulator and a volume": no separate object database.
+- **Plain HTTP, with `secure_connection=0`.** On the fabric network there is no
+  TLS. FDB connected immediately once that parameter was set
+  (`S3BlobStoreEndpointNewConnectionSuccess`); the earlier "operation timed out"
+  was a short default request timeout, not a transport problem.
+- **Credentials go inline in the URL, not a credentials file.** A
+  `--blob-credentials` file keyed `access_key@host:port` failed with
+  `backup_auth_missing`: FDB keys its lookup on `access_key@host` without the
+  port. `blobstore://<key>:<secret>@<host>:<port>/...` sidesteps the lookup and
+  is acceptable for a local dev quickstart. A file (keyed without the port) is
+  the right choice off-host where the secret must not sit in `fdbbackup status`.
+
+A `backup_agent` must be running for any data to move; with inline-URL
+credentials the agent needs only `-C <cluster file>`, since it reads the
+destination (with its inline secret) from the database.
+
 ## Tasks
 
-- [ ] Stand up versitygw as a quadlet alongside the FoundationDB nodes.
-- [ ] Configure `fdbbackup` against it.
+- [x] Stand up versitygw and prove `fdbbackup` writes through it into a volume.
+- [ ] Codify it into the bootstrap: a versitygw quadlet, a `backup_agent`
+      quadlet, and `fdbbackup start`, behind CLI verbs.
 - [ ] **Verify a restore, not just a backup.** An unverified backup is not a
       backup, and `fdbrestore` is in the same image.
 - [x] **Decided: continuous** (`fdbbackup start`), targeting near-zero data
