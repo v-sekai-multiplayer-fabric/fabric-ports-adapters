@@ -42,10 +42,12 @@ defmodule RivetFabric.Domain.Spec do
         port: 6420,
         peer_port: 6421,
         admin_token: "local-dev-token",
-        # The FoundationDB backend is not in upstream Rivet. It lives on this
-        # branch of the fork, pinned so the build is reproducible.
+        # The FoundationDB backend, WebTransport, and the datagram transport are
+        # not in upstream Rivet. They live on the fork's webtransport-datagrams
+        # branch, pinned at its HEAD so a build reproduces the engine that is
+        # actually run.
         rivet_repo: "https://github.com/v-sekai-multiplayer-fabric/rivet.git",
-        rivet_ref: "a6cd747fcd49e9f28f9c8a0c622456e763e3d771"
+        rivet_ref: "9d9e1b934d6385e771d8ecbe8c5c547673db88c2"
       },
       godot: %{
         app: "mf-rivet-godot",
